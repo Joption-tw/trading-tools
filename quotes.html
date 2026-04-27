@@ -132,7 +132,7 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <div class="sep"></div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
       <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
-      <span style="font-size:9px;color:#8b949e;">v1.4.0 · A股ETF期權報價</span>
+      <span style="font-size:9px;color:#8b949e;">v1.4.1 · A股ETF期權報價</span>
     </div>
   </div>
 </div>
@@ -357,72 +357,62 @@ async function fetchQuotes(codesMap){
   if(!codes.length) return{};
   const out={};
   const UT='fa5fd1943c7b386f172d6893dbfba10b';
+  const ts=Date.now();
 
-  // ── 主要：slist 整批抓（透過 proxy 繞過 CORS）──────
-  // fs=b:{underlying} 取得該標的所有期權
-  // 從 codesMap 的合約名稱推算標的代碼
-  const sampleName=Object.values(codesMap)[0]?.name||'';
-  const ulMatch=sampleName.match(/(\d{6})/);
-  // 若名稱帶不到代碼，從 codesMap key 推（8位代碼前6位有時等於標的）
-  // 直接用 url 裡的 ul 參數（已在 refresh() 取得）
-  const ulCode=ulMatch?ulMatch[1]:(window._currentUL||'510050');
-
-  const slistTarget=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
-    `&fields=f2,f3,f4,f5,f12,f13,f14,f17,f18,f19&pn=1&pz=500&po=1&np=1`+
-    `&ut=${UT}&fid=f12&fs=b:${ulCode}+f:!50&_=${Date.now()}`;
+  // ── 主要：ulist 批次抓（1 個 proxy 請求取全部代碼）──
+  // secids=10.10011291,10.10011292,...
+  const secids=codes.map(c=>`${codesMap[c]?.mkt||'10'}.${c}`).join(',');
+  const ulistTarget=`https://push2.eastmoney.com/api/qt/ulist/get?secids=${encodeURIComponent(secids)}`+
+    `&fields=f12,f43,f169,f170,f5,f15,f19,f18&fltt=2&ut=${UT}&_=${ts}`;
 
   try{
-    const r=await proxyFetch(slistTarget);
+    const r=await proxyFetch(ulistTarget);
     const d=await r.json();
     const diff=d?.data?.diff||[];
-    console.log('[quotes] slist diff count:', diff.length,
-      diff.length?'| sample:'+JSON.stringify(diff[0]):'');
+    console.log('[quotes] ulist count:',diff.length, diff.length?JSON.stringify(diff[0]):'(empty)');
     for(const item of diff){
       const code=String(item.f12||'');
-      if(!code||!codesMap[code]) continue;
-      // f2=最新價(實數), f3=漲跌%, f4=漲跌額, f5=成交量
-      // f17=買一價, f19=賣一價, f18=昨收
-      const last=item.f2, chg=item.f3, chgA=item.f4,
-            vol=item.f5, bid=item.f17, ask=item.f19, prevC=item.f18;
+      if(!code) continue;
+      const last=item.f43;
       if(typeof last==='number'&&last>0)
-        out[code]={last, chg:chg||0, chgA:chgA||0,
-          bid:bid>0?bid:null, ask:ask>0?ask:null,
-          vol:vol||0, oi:null};
+        out[code]={last, chgA:item.f169||0, chg:item.f170||0,
+          bid:item.f19>0?item.f19:null, ask:item.f15>0?item.f15:null,
+          vol:item.f5||0, oi:item.f18||null};
     }
-    const validCnt=Object.keys(out).length;
-    console.log(`[quotes] slist via proxy: ${validCnt}/${codes.length} valid`);
-    if(validCnt>0) return out;
-  }catch(e){ console.warn('[quotes] slist fail:',e.message); }
+    const n=Object.keys(out).length;
+    console.log(`[quotes] ulist: ${n}/${codes.length} valid`);
+    if(n>0) return out;
+  }catch(e){ console.warn('[quotes] ulist fail:',e.message); }
 
-  // ── 備用：新浪財經期權 API（透過 proxy）──────────
-  // http://stock.finance.sina.com.cn/futures/api/openapi.php/StockOptionService.getStockName
+  // ── 備用：逐一 stock/get（22 個並行 proxy 請求）────
+  console.log('[quotes] 嘗試逐一 stock/get...');
   try{
-    const month=String(ulCode).slice(0,4); // 不一定有月份，先整批
-    const sinaBase='http://stock.finance.sina.com.cn/futures/api/openapi.php/StockOptionService.getOptionInfo';
-    for(const optType of [-1,-2]){
-      const sinaTarget=`${sinaBase}?type=futures&underlying=${ulCode}&optionType=${optType}&contractMonth=`;
-      const r=await proxyFetch(sinaTarget);
-      const d=await r.json();
-      const items=d?.result?.data;
-      if(!items) continue;
-      const arr=Array.isArray(items)?items:Object.values(items).flat();
-      for(const item of arr){
-        const code=item.contractId||'';
-        if(!code||!codesMap[code]) continue;
-        const last=parseFloat(item.lastPrice)||0;
-        const bid=parseFloat(item.bidPrice1)||0;
-        const ask=parseFloat(item.askPrice1)||0;
-        const vol=parseInt(item.totalVolume)||0;
-        if(last>0)
-          out[code]={last, chg:parseFloat(item.chg)||0,
-            chgA:parseFloat(item.chgAmount)||0,
-            bid:bid>0?bid:null, ask:ask>0?ask:null, vol, oi:null};
-      }
+    const reqs=codes.map(async code=>{
+      const mkt=codesMap[code]?.mkt||'10';
+      const t=`https://push2.eastmoney.com/api/qt/stock/get?secid=${mkt}.${code}`+
+        `&fields=f43,f169,f170,f5,f15,f19,f18&fltt=2&ut=${UT}&_=${ts}`;
+      try{
+        const r=await proxyFetch(t);
+        const d=await r.json();
+        return{code,dt:d?.data};
+      }catch(e){return{code,dt:null};}
+    });
+    const results=await Promise.all(reqs);
+    // 印出第一筆有值的 sample，確認欄位
+    const ok=results.find(x=>x.dt?.f43);
+    if(ok) console.log('[quotes] stock/get sample:',JSON.stringify(ok.dt));
+    for(const{code,dt}of results){
+      if(!dt) continue;
+      const last=dt.f43;
+      if(typeof last==='number'&&last>0)
+        out[code]={last, chgA:dt.f169||0, chg:dt.f170||0,
+          bid:dt.f19>0?dt.f19:null, ask:dt.f15>0?dt.f15:null,
+          vol:dt.f5||0, oi:dt.f18||null};
     }
-    const validCnt=Object.keys(out).length;
-    console.log(`[quotes] Sina option API: ${validCnt} valid`);
-    if(validCnt>0) return out;
-  }catch(e){ console.warn('[quotes] Sina option fail:',e.message); }
+    const n=Object.keys(out).length;
+    console.log(`[quotes] stock/get: ${n}/${codes.length} valid`);
+    if(n>0) return out;
+  }catch(e){ console.warn('[quotes] stock/get fail:',e.message); }
 
   return out;
 }
