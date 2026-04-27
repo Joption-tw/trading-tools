@@ -336,30 +336,56 @@ function parseName(name){
 }
 
 // ── 抓即時報價（東方財富）────────────────────
-// codesMap: { code: {name, mkt} }
 async function fetchQuotes(codesMap){
   const entries=Object.entries(codesMap);
   if(!entries.length) return{};
-  // 使用各合約正確的市場代碼（10=滬, 0=深）
-  const secids=entries.map(([c,{mkt}])=>`${mkt}.${c}`).join(',');
-  const url=`https://push2.eastmoney.com/api/qt/ulist/get?secids=${encodeURIComponent(secids)}&fields=f2,f3,f4,f5,f12,f14,f15,f17,f18&fltt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&_=${Date.now()}`;
-  const r=await fetch(url,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
-  const d=await r.json();
-  const out={};
-  for(const item of d?.data?.diff||[]){
-    const c=String(item.f12||'');
-    const L=item.f2,B=item.f17,A=item.f15,chg=item.f3,chgA=item.f4,vol=item.f5,oi=item.f18;
-    out[c]={
-      last: typeof L==='number'?L/1000:null,
-      bid:  typeof B==='number'?B/1000:null,
-      ask:  typeof A==='number'?A/1000:null,
-      chg:  typeof chg==='number'?chg:null,    // 漲跌% (如 +2.50)
-      chgA: typeof chgA==='number'?chgA/1000:null, // 漲跌額（元）
-      vol:  typeof vol==='number'?vol:0,
-      oi:   typeof oi==='number'?oi:null        // 持倉量
-    };
+
+  const parseItems=(items)=>{
+    const out={};
+    for(const item of items){
+      const c=String(item.f12||''); if(!c) continue;
+      // fltt=2 → 價格已是實際浮點數，不需 /1000
+      const L=item.f2,B=item.f17,A=item.f15,chg=item.f3,chgA=item.f4,vol=item.f5,oi=item.f18;
+      out[c]={
+        last: typeof L==='number'?L:null,
+        bid:  typeof B==='number'?B:null,
+        ask:  typeof A==='number'?A:null,
+        chg:  typeof chg==='number'?chg:null,
+        chgA: typeof chgA==='number'?chgA:null,
+        vol:  typeof vol==='number'?vol:0,
+        oi:   typeof oi==='number'?oi:null
+      };
+    }
+    return out;
+  };
+
+  // 依序嘗試：市場代碼 10(滬期權) → 1(滬A) → 各自走 CORS Proxy
+  const codes=entries.map(([c])=>c);
+  for(const pfx of['10','1']){
+    const secids=codes.map(c=>`${pfx}.${c}`).join(',');
+    const target=`https://push2.eastmoney.com/api/qt/ulist/get?secids=${encodeURIComponent(secids)}&fields=f2,f3,f4,f5,f12,f14,f15,f17,f18&fltt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&_=${Date.now()}`;
+
+    // 先直連
+    try{
+      const r=await fetch(target,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
+      const d=await r.json();
+      const items=d?.data?.diff||[];
+      console.log(`[quotes] pfx=${pfx} direct items=${items.length}`, items[0]);
+      if(items.some(i=>typeof i.f2==='number')) return parseItems(items);
+    }catch(e){ console.warn('[quotes] direct fail',pfx,e.message); }
+
+    // 直連失敗 → CORS Proxy
+    if(CORS_PROXY){
+      try{
+        const r=await fetch(CORS_PROXY+encodeURIComponent(target),{cache:'no-store'});
+        const d=await r.json();
+        const items=d?.data?.diff||[];
+        console.log(`[quotes] pfx=${pfx} proxy items=${items.length}`, items[0]);
+        if(items.some(i=>typeof i.f2==='number')) return parseItems(items);
+      }catch(e){ console.warn('[quotes] proxy fail',pfx,e.message); }
+    }
   }
-  return out;
+  return{};
 }
 
 // ── 渲染 ──────────────────────────────────────
