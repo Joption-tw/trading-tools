@@ -132,7 +132,7 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <div class="sep"></div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
       <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
-      <span style="font-size:9px;color:#8b949e;">v1.3.1 · A股ETF期權報價</span>
+      <span style="font-size:9px;color:#8b949e;">v1.3.2 · A股ETF期權報價</span>
     </div>
   </div>
 </div>
@@ -262,29 +262,48 @@ function buildMonths(){
   if(prev&&[...sel.options].some(o=>o.value===prev)) sel.value=prev;
 }
 
-// ── 抓現價（東方財富，無 CORS 問題）───────────
+// ── 抓現價（騰訊財經 qt.gtimg.cn，有 CORS）────
 async function fetchSpot(code){
-  const mkt=code.startsWith('5')?'1':'0'; // 1=滬 0=深
-  const r=await fetch(
-    `https://push2.eastmoney.com/api/qt/stock/get?secid=${mkt}.${code}&fields=f43,f57,f58,f169,f170&fltt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&_=${Date.now()}`,
-    {headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
-  const d=await r.json();
-  const dt=d?.data;
-  if(!dt||!dt.f43) return;
-  spot    = typeof dt.f43 ==='number'?dt.f43:parseFloat(dt.f43)||0;
-  const chgA = typeof dt.f169==='number'?dt.f169:0;
-  prevClose   = spot - chgA;
-  document.getElementById('h-name').textContent=dt.f58||code;
+  const pfx=code.startsWith('5')?'sh':'sz';
+  try{
+    const r=await fetch(`https://qt.gtimg.cn/q=${pfx}${code}`,{cache:'no-store'});
+    const txt=await r.text();
+    // v_sh510050="1~上证50ETF~510050~3.009~-0.009~-0.30%~vol~amt~..."
+    const m=txt.match(/v_(?:sh|sz)\w+="([^"]+)"/);
+    if(!m) return;
+    const pts=m[1].split('~');
+    spot=parseFloat(pts[3])||0;
+    const chgA=parseFloat(pts[31])||parseFloat(pts[4])||0;
+    prevClose=spot-chgA;
+    document.getElementById('h-name').textContent=pts[1]||code;
+    console.log('[spot] Tencent OK:',spot);
+  }catch(e){ console.warn('[spot] Tencent fail:',e.message); }
 }
 
 // ── 抓合約代碼 ────────────────────────────────
 // 遠端（GitHub Pages）自動加 CORS Proxy，本機直連
-const CORS_PROXY = (() => {
-  const h = window.location.hostname;
-  return (h === 'localhost' || h === '127.0.0.1' || h === '')
-    ? ''                          // 本機直連
-    : 'https://corsproxy.io/?';  // 遠端走 proxy
-})();
+// allorigins.win 比 corsproxy.io 更穩定
+const IS_REMOTE = !(window.location.hostname==='' ||
+                    window.location.hostname==='localhost' ||
+                    window.location.hostname==='127.0.0.1');
+// proxy 函式：依序嘗試多個 proxy
+async function proxyFetch(targetUrl, opts={}){
+  const proxies=[
+    u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u=>`https://thingproxy.freeboard.io/fetch/${u}`,
+  ];
+  for(const mkProxy of proxies){
+    try{
+      const url=IS_REMOTE?mkProxy(targetUrl):targetUrl;
+      const r=await fetch(url,{...opts,cache:'no-store'});
+      if(r.ok) return r;
+    }catch(e){ /* 繼續下一個 proxy */ }
+  }
+  throw new Error('所有 proxy 均失敗');
+}
+// 相容舊程式碼
+const CORS_PROXY = IS_REMOTE ? 'https://api.allorigins.win/raw?url=' : '';
 
 async function fetchCodes(code, moNum){
   const result={};
@@ -335,79 +354,81 @@ function parseName(name){
   return{isCall, strike:strikeRaw/1000, monthNum};
 }
 
-// ── 抓即時報價（東方財富 push2 逐一 stock/get，有 CORS）──
+// ── 抓即時報價（東方財富 slist，經 proxy 一次抓全部）──
+// slist 欄位：f2=最新價, f3=漲跌%, f4=漲跌額, f5=成交量
+//             f12=代碼, f13=市場, f14=名稱, f18=昨收/持倉
+//             f15=最高, f17=買一, f19=賣一 ← 注意 slist 與 stock/get 欄位不同
 async function fetchQuotes(codesMap){
   const codes=Object.keys(codesMap);
   if(!codes.length) return{};
   const out={};
   const UT='fa5fd1943c7b386f172d6893dbfba10b';
-  const HDRS={headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'};
 
-  // ── 主要：東方財富 push2 逐一抓（支援 CORS，不需 proxy）──
-  // 上交所期權市場代碼 = 10，深交所 = 0
-  // fields: f43=最新價, f169=漲跌額, f170=漲跌%, f5=成交量,
-  //         f19=買一價, f15=賣一價, f18=持倉量
+  // ── 主要：slist 整批抓（透過 proxy 繞過 CORS）──────
+  // fs=b:{underlying} 取得該標的所有期權
+  // 從 codesMap 的合約名稱推算標的代碼
+  const sampleName=Object.values(codesMap)[0]?.name||'';
+  const ulMatch=sampleName.match(/(\d{6})/);
+  // 若名稱帶不到代碼，從 codesMap key 推（8位代碼前6位有時等於標的）
+  // 直接用 url 裡的 ul 參數（已在 refresh() 取得）
+  const ulCode=ulMatch?ulMatch[1]:(window._currentUL||'510050');
+
+  const slistTarget=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
+    `&fields=f2,f3,f4,f5,f12,f13,f14,f17,f18,f19&pn=1&pz=500&po=1&np=1`+
+    `&ut=${UT}&fid=f12&fs=b:${ulCode}+f:!50&_=${Date.now()}`;
+
   try{
-    const ts=Date.now();
-    const reqs=codes.map(async code=>{
-      const mkt=codesMap[code]?.mkt||'10';
-      const secid=`${mkt}.${code}`;
-      const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}`+
-        `&fields=f43,f169,f170,f5,f15,f19,f18,f57,f58&fltt=2&ut=${UT}&_=${ts}`;
-      try{
-        const r=await fetch(url,HDRS);
-        const d=await r.json();
-        return{code, dt:d?.data};
-      }catch(e){ return{code,dt:null}; }
-    });
-    const results=await Promise.all(reqs);
+    const r=await proxyFetch(slistTarget);
+    const d=await r.json();
+    const diff=d?.data?.diff||[];
+    console.log('[quotes] slist diff count:', diff.length,
+      diff.length?'| sample:'+JSON.stringify(diff[0]):'');
+    for(const item of diff){
+      const code=String(item.f12||'');
+      if(!code||!codesMap[code]) continue;
+      // f2=最新價(實數), f3=漲跌%, f4=漲跌額, f5=成交量
+      // f17=買一價, f19=賣一價, f18=昨收
+      const last=item.f2, chg=item.f3, chgA=item.f4,
+            vol=item.f5, bid=item.f17, ask=item.f19, prevC=item.f18;
+      if(typeof last==='number'&&last>0)
+        out[code]={last, chg:chg||0, chgA:chgA||0,
+          bid:bid>0?bid:null, ask:ask>0?ask:null,
+          vol:vol||0, oi:null};
+    }
+    const validCnt=Object.keys(out).length;
+    console.log(`[quotes] slist via proxy: ${validCnt}/${codes.length} valid`);
+    if(validCnt>0) return out;
+  }catch(e){ console.warn('[quotes] slist fail:',e.message); }
 
-    // 第一筆有效 log，幫助確認欄位
-    const firstOk=results.find(x=>x.dt&&x.dt.f43);
-    if(firstOk) console.log('[quotes] EM first sample:', JSON.stringify(firstOk.dt));
-
-    for(const{code,dt}of results){
-      if(!dt) continue;
-      const last=dt.f43, chgA=dt.f169, chg=dt.f170,
-            vol=dt.f5, bid=dt.f19, ask=dt.f15, oi=dt.f18;
-      if(typeof last==='number'&&last>0){
-        out[code]={
-          last, chgA:chgA||0, chg:chg||0,
-          bid: bid>0?bid:null, ask: ask>0?ask:null,
-          vol: vol||0, oi: oi||null
-        };
+  // ── 備用：新浪財經期權 API（透過 proxy）──────────
+  // http://stock.finance.sina.com.cn/futures/api/openapi.php/StockOptionService.getStockName
+  try{
+    const month=String(ulCode).slice(0,4); // 不一定有月份，先整批
+    const sinaBase='http://stock.finance.sina.com.cn/futures/api/openapi.php/StockOptionService.getOptionInfo';
+    for(const optType of [-1,-2]){
+      const sinaTarget=`${sinaBase}?type=futures&underlying=${ulCode}&optionType=${optType}&contractMonth=`;
+      const r=await proxyFetch(sinaTarget);
+      const d=await r.json();
+      const items=d?.result?.data;
+      if(!items) continue;
+      const arr=Array.isArray(items)?items:Object.values(items).flat();
+      for(const item of arr){
+        const code=item.contractId||'';
+        if(!code||!codesMap[code]) continue;
+        const last=parseFloat(item.lastPrice)||0;
+        const bid=parseFloat(item.bidPrice1)||0;
+        const ask=parseFloat(item.askPrice1)||0;
+        const vol=parseInt(item.totalVolume)||0;
+        if(last>0)
+          out[code]={last, chg:parseFloat(item.chg)||0,
+            chgA:parseFloat(item.chgAmount)||0,
+            bid:bid>0?bid:null, ask:ask>0?ask:null, vol, oi:null};
       }
     }
     const validCnt=Object.keys(out).length;
-    console.log(`[quotes] EM push2 individual: ${validCnt}/${codes.length} valid`);
+    console.log(`[quotes] Sina option API: ${validCnt} valid`);
     if(validCnt>0) return out;
-  }catch(e){ console.warn('[quotes] EM individual fail:',e.message); }
-
-  // ── 備用：東方財富 slist（整批抓，有時會有資料）──
-  try{
-    const code0=codes[0];
-    // 從第一個合約名稱推算標的代碼（名稱含 510050/510300 等）
-    const nm=codesMap[code0]?.name||'';
-    const ulMatch=nm.match(/5\d{5}/);
-    const ulCode=ulMatch?ulMatch[0]:'510050';
-    const url=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
-      `&fields=f12,f13,f43,f169,f170,f5,f15,f19,f18&pn=1&pz=200&po=1&np=1`+
-      `&ut=${UT}&fid=f12&fs=b:${ulCode}+f:!50&_=${Date.now()}`;
-    const r=await fetch(url,HDRS);
-    const d=await r.json();
-    for(const item of d?.data?.diff||[]){
-      const code=String(item.f12||'');
-      if(!code||!codesMap[code]) continue;
-      const last=item.f43, chgA=item.f169, chg=item.f170,
-            vol=item.f5, bid=item.f19, ask=item.f15, oi=item.f18;
-      if(typeof last==='number'&&last>0)
-        out[code]={last,chgA:chgA||0,chg:chg||0,
-          bid:bid>0?bid:null,ask:ask>0?ask:null,vol:vol||0,oi:oi||null};
-    }
-    const validCnt=Object.keys(out).length;
-    console.log(`[quotes] EM slist: ${validCnt} valid`);
-    if(validCnt>0) return out;
-  }catch(e){ console.warn('[quotes] EM slist fail:',e.message); }
+  }catch(e){ console.warn('[quotes] Sina option fail:',e.message); }
 
   return out;
 }
@@ -558,6 +579,7 @@ function updateSummary(){
 // ── 主刷新 ───────────────────────────────────
 async function refresh(){
   const code =document.getElementById('sel-ul').value;
+  window._currentUL=code; // 供 fetchQuotes 取用
   const ymVal=document.getElementById('sel-month').value;
   const moNum=parseInt(ymVal.slice(4,6));
   expiryDate=expiry4thWed(ymVal);
