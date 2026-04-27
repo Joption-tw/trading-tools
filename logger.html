@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>期權記錄表</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#0d1117;color:#e6edf3;font-family:'Consolas','微軟正黑體',monospace;font-size:12px;}
@@ -78,6 +79,15 @@ td.pos {color:#3fb950;}
 td.neg {color:#f85149;}
 td.zer {color:#6e7681;}
 
+/* ── 圖表區域 ── */
+#chart-panel{
+  background:#0d1117;border-bottom:1px solid #21262d;
+  display:none; /* 預設隱藏，點按鈕展開 */
+}
+#chart-panel.open{ display:block; }
+#chart-container{ width:100%; height:300px; }
+.btn-chart-active{ background:#1c3a5e !important; color:#58a6ff !important; border-color:#58a6ff !important; }
+
 /* ── 捲軸 ── */
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:#0d1117;}
@@ -150,6 +160,7 @@ td.zer {color:#6e7681;}
   <!-- 按鈕 -->
   <button class="btn btn-blue"  onclick="recordNow()" title="立即記錄一筆">📝 記錄</button>
   <button class="btn btn-green" onclick="toggleAuto()" id="auto-btn">▶ 自動記錄</button>
+  <button class="btn btn-gray"  onclick="toggleChart()" id="chart-btn" title="顯示/隱藏圖表">📈 圖表</button>
   <button class="btn btn-gray"  onclick="exportCSV()" title="匯出 CSV（可用 Excel 開啟）">💾 匯出CSV</button>
   <button class="btn btn-red"   onclick="clearLog()"  title="清除所有記錄">🗑 清除</button>
 
@@ -163,6 +174,10 @@ td.zer {color:#6e7681;}
     <span style="width:1px;background:#30363d;height:20px;display:inline-block;margin:0 4px;"></span>
     <span id="save-notice" style="color:#e3b341;font-size:10px;white-space:nowrap;">計算中…</span>
   </div>
+</div>
+
+<div id="chart-panel">
+  <div id="chart-container"></div>
 </div>
 
 <div id="table-wrap">
@@ -358,6 +373,9 @@ function renderTable(){
 function fmt(v)  { return v !== 0 ? v.toFixed(2) : '0'; }
 function fmtN(v) { return v !== 0 ? v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0'; }
 
+  // 圖表同步更新
+  if(chartOpen) updateChart();
+
 // ── 匯出 CSV（isAuto=true 為自動存檔）────────────
 function exportCSV(isAuto=false){
   if(!records.length){
@@ -437,10 +455,157 @@ function clearLog(){
   renderTable();
 }
 
+// ── ECharts 圖表 ─────────────────────────────────
+let myChart = null;
+let chartOpen = false;
+
+function toggleChart(){
+  chartOpen = !chartOpen;
+  const panel = document.getElementById('chart-panel');
+  const btn   = document.getElementById('chart-btn');
+  panel.classList.toggle('open', chartOpen);
+  btn.classList.toggle('btn-chart-active', chartOpen);
+  adjustTableHeight();
+  if(chartOpen){
+    if(!myChart) initChart();
+    else myChart.resize();
+    updateChart();
+  }
+}
+
+function adjustTableHeight(){
+  const topH   = document.getElementById('topbar')?.offsetHeight || 60;
+  const chartH = chartOpen ? (document.getElementById('chart-panel')?.offsetHeight || 0) : 0;
+  const wrap   = document.getElementById('table-wrap');
+  if(wrap) wrap.style.height = `calc(100vh - ${topH + chartH}px)`;
+}
+
+function initChart(){
+  const el = document.getElementById('chart-container');
+  if(!el) return;
+  myChart = echarts.init(el);  // 自訂深色主題
+  window.addEventListener('resize', ()=>{ myChart?.resize(); adjustTableHeight(); });
+}
+
+function updateChart(){
+  if(!myChart || !records.length) return;
+
+  // X 軸：時間
+  const xs  = records.map(r => r.time);           // 只用時間（同天）
+  const tvs = records.map(r => r.tv   ?? null);   // 時間價值
+  const cvs = records.map(r => r.call ?? null);   // 買權點數
+  const pvs = records.map(r => r.put  ?? null);   // 賣權點數
+
+  const hasCv = cvs.some(v=>v!==0&&v!==null);
+  const hasPv = pvs.some(v=>v!==0&&v!==null);
+
+  myChart.setOption({
+    backgroundColor:'#0d1117',
+    animation: false,
+    grid:{ left:70, right: hasCv||hasPv ? 70 : 20, top:50, bottom:55 },
+    tooltip:{
+      trigger:'axis',
+      backgroundColor:'#161b22',
+      borderColor:'#30363d',
+      textStyle:{color:'#e6edf3', fontSize:11},
+      axisPointer:{ type:'cross', lineStyle:{color:'#58a6ff', opacity:.5} },
+      formatter(params){
+        let s=`<b>${params[0]?.axisValue}</b><br>`;
+        params.forEach(p=>{
+          if(p.value==null) return;
+          s+=`<span style="color:${p.color}">●</span> ${p.seriesName}：<b>${(+p.value).toLocaleString()}</b><br>`;
+        });
+        return s;
+      }
+    },
+    legend:{
+      data:['時間價值','買權點數','賣權點數'],
+      textStyle:{color:'#8b949e', fontSize:11},
+      top:8, right:16,
+      selectedMode:true
+    },
+    xAxis:{
+      type:'category', data: xs,
+      axisLabel:{color:'#8b949e', fontSize:10, rotate: xs.length>30?30:0},
+      axisLine:{lineStyle:{color:'#30363d'}},
+      splitLine:{lineStyle:{color:'#1a1f27', type:'dashed'}}
+    },
+    yAxis:[
+      {   // 左軸：時間價值
+        type:'value', name:'時間價值',
+        nameTextStyle:{color:'#e3b341', fontSize:10},
+        position:'left',
+        axisLabel:{color:'#e3b341', fontSize:10, formatter:v=>v>=1000?`${(v/1000).toFixed(1)}k`:v},
+        splitLine:{lineStyle:{color:'#21262d', type:'dashed'}},
+        axisLine:{show:true, lineStyle:{color:'#e3b341'}},
+        scale:true
+      },
+      {   // 右軸：買賣權點數
+        type:'value', name:'買賣權',
+        nameTextStyle:{color:'#8b949e', fontSize:10},
+        position:'right',
+        show: hasCv||hasPv,
+        axisLabel:{color:'#8b949e', fontSize:10},
+        splitLine:{show:false},
+        scale:true
+      }
+    ],
+    dataZoom:[
+      {
+        type:'slider', xAxisIndex:0,
+        bottom:4, height:22,
+        borderColor:'#30363d', backgroundColor:'#161b22',
+        fillerColor:'rgba(88,166,255,0.12)',
+        handleStyle:{color:'#58a6ff'},
+        textStyle:{color:'#8b949e'}
+      },
+      { type:'inside', xAxisIndex:0 }
+    ],
+    series:[
+      {
+        name:'時間價值', type:'line', yAxisIndex:0,
+        data: tvs, smooth:true, connectNulls:false,
+        symbol:'circle', symbolSize:4,
+        lineStyle:{color:'#e3b341', width:2},
+        itemStyle:{color:'#e3b341'},
+        areaStyle:{
+          color:{type:'linear',x:0,y:0,x2:0,y2:1,
+            colorStops:[{offset:0,color:'rgba(227,179,65,0.35)'},{offset:1,color:'rgba(227,179,65,0)'}]}
+        },
+        markPoint:{
+          symbolSize:36,
+          label:{fontSize:9, color:'#fff'},
+          data:[
+            {type:'max',name:'最高',itemStyle:{color:'#f0a500'}},
+            {type:'min',name:'最低',itemStyle:{color:'#58a6ff'}}
+          ]
+        }
+      },
+      {
+        name:'買權點數', type:'line', yAxisIndex:1,
+        data: cvs, smooth:true, connectNulls:false,
+        symbol:'none',
+        lineStyle:{color:'#3fb950', width:1.5, type:'dashed'},
+        itemStyle:{color:'#3fb950'},
+        show: hasCv
+      },
+      {
+        name:'賣權點數', type:'line', yAxisIndex:1,
+        data: pvs, smooth:true, connectNulls:false,
+        symbol:'none',
+        lineStyle:{color:'#f85149', width:1.5, type:'dashed'},
+        itemStyle:{color:'#f85149'},
+        show: hasPv
+      }
+    ]
+  }, true);
+}
+
 // ── 初始化 ──────────────────────────────────────
 renderTable();
 updateNextSave();
 tryLoadStorage();
+adjustTableHeight();
 </script>
 </body>
 </html>
