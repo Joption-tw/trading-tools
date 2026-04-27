@@ -103,11 +103,11 @@ td.zer {color:#6e7681;}
 
   <!-- 買/賣/總點數 -->
   <div class="field">
-    <label>買權點數</label>
+    <label>買權點數 <span style="color:#58a6ff;font-size:9px">🔗自動</span></label>
     <input id="i-call" class="narrow" type="number" value="0" step="0.01">
   </div>
   <div class="field">
-    <label>賣權點數</label>
+    <label>賣權點數 <span style="color:#58a6ff;font-size:9px">🔗自動</span></label>
     <input id="i-put" class="narrow" type="number" value="0" step="0.01">
   </div>
   <div class="field" title="買+賣 自動計算">
@@ -125,7 +125,7 @@ td.zer {color:#6e7681;}
 
   <!-- 主要數據 -->
   <div class="field">
-    <label>時間價值</label>
+    <label>時間價值 <span style="color:#58a6ff;font-size:9px">🔗自動</span></label>
     <input id="i-tv" class="wide" type="number" value="0" step="0.01">
   </div>
   <div class="field">
@@ -133,8 +133,8 @@ td.zer {color:#6e7681;}
     <input id="i-acct" class="wide" type="number" value="0" step="0.01">
   </div>
   <div class="field">
-    <label>期貨指數</label>
-    <input id="i-fut" class="wide" type="number" value="0" step="1">
+    <label>標的現價 <span style="color:#58a6ff;font-size:9px">🔗自動</span></label>
+    <input id="i-fut" class="wide" type="number" value="0" step="0.0001">
   </div>
   <div class="field">
     <label>保證金</label>
@@ -157,6 +157,9 @@ td.zer {color:#6e7681;}
     <span class="dot" id="dot"></span>
     <span id="status-txt">就緒</span>
     <span id="counter">0</span><span style="color:#8b949e;font-size:11px"> 筆</span>
+    <span style="width:1px;background:#30363d;height:20px;display:inline-block;margin:0 4px;"></span>
+    <span id="conn-dot" style="width:7px;height:7px;border-radius:50%;background:#6e7681;display:inline-block;"></span>
+    <span id="conn-txt" style="font-size:10px;color:#6e7681;white-space:nowrap;">未連接報價頁</span>
     <span style="width:1px;background:#30363d;height:20px;display:inline-block;margin:0 4px;"></span>
     <span id="save-notice" style="color:#e3b341;font-size:10px;white-space:nowrap;">計算中…</span>
   </div>
@@ -186,6 +189,46 @@ td.zer {color:#6e7681;}
 </div>
 
 <script>
+// ── 跨分頁同步（從報價頁接收）──────────────────
+const _BC = (()=>{ try{ return new BroadcastChannel('joption_sync'); }catch(e){ return null; } })();
+let _lastSync = 0;
+
+function applyQuotes(d){
+  if(!d||!d.ts) return;
+  document.getElementById('i-call').value = d.cv ?? 0;
+  document.getElementById('i-put').value  = d.pv ?? 0;
+  document.getElementById('i-tv').value   = d.tv ?? 0;
+  if(d.spot) document.getElementById('i-fut').value = (+d.spot).toFixed(4);
+  calcTotals();
+  _lastSync = d.ts;
+  setConn(true, d.name||'');
+}
+
+function setConn(ok, name=''){
+  const dot = document.getElementById('conn-dot');
+  const txt = document.getElementById('conn-txt');
+  if(dot) dot.style.background = ok ? '#3fb950' : '#6e7681';
+  if(txt) txt.textContent = ok ? `🔗 ${name} 已同步` : '未連接報價頁';
+}
+
+// BroadcastChannel 即時接收（同瀏覽器跨分頁）
+if(_BC) _BC.onmessage = e => applyQuotes(e.data);
+
+// 頁面載入時嘗試讀 localStorage（若報價頁已開過）
+function tryLoadStorage(){
+  try{
+    const raw = localStorage.getItem('joption_live');
+    if(!raw) return;
+    const d = JSON.parse(raw);
+    if(Date.now()-d.ts < 120000) applyQuotes(d); // 2分鐘內視為有效
+  }catch(e){}
+}
+
+// 每 30 秒偵測一次連線是否超時（超過 10 秒無資料則標示離線）
+setInterval(()=>{
+  if(_lastSync && Date.now()-_lastSync > 10000) setConn(false);
+}, 30000);
+
 // ── 儲存 ────────────────────────────────────────
 const STORE_KEY = 'optlog_v1';
 let records = [];
@@ -397,6 +440,7 @@ function clearLog(){
 // ── 初始化 ──────────────────────────────────────
 renderTable();
 updateNextSave();
+tryLoadStorage();
 </script>
 </body>
 </html>

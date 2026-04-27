@@ -272,23 +272,42 @@ async function fetchSpot(code){
   document.getElementById('h-name').textContent=dt.f58||code;
 }
 
-// ── 抓合約代碼（東方財富搜尋）──────────────────
+// ── 抓合約代碼（東方財富 slist，無 CORS 問題）───
 async function fetchCodes(code, moNum){
-  const prefix=code==='510050'?'50ETF':
-                code==='510300'?'300ETF':
-                code==='510500'?'500ETF':
-                code==='159919'?'300ETF':
-                code==='588000'?'科創50':code;
   const result={};
-  for(const type of ['购','沽']){
-    const q=`${prefix}${type}${moNum}月`;
-    const r=await fetch(
-      `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=REMGTP&count=60`,
-      {headers:{Referer:'https://www.eastmoney.com/'},cache:'no-store'});
+
+  // 主要方案：push2 slist（與現價同域，GitHub Pages 無 CORS 問題）
+  try{
+    const url=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
+      `&fields=f12,f13,f14&pn=1&pz=500&po=1&np=1`+
+      `&ut=fa5fd1943c7b386f172d6893dbfba10b&fid=f12`+
+      `&fs=b:${code}+f:!50&_=${Date.now()}`;
+    const r=await fetch(url,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
     const d=await r.json();
-    for(const item of d?.QuotationCodeTable?.Data||[])
-      // MktNum: "10"=上交所期權, "0"=深交所期權
-      result[item.Code]={name:item.Name, mkt:item.MktNum||'10'};
+    for(const item of d?.data?.diff||[]){
+      const c=String(item.f12||'');
+      const name=item.f14||'';
+      const mkt=String(item.f13||'10');
+      if(c&&name) result[c]={name,mkt};
+    }
+  }catch(e){ console.warn('slist 失敗，改用搜尋 API',e); }
+
+  // 備用方案：searchapi（本機直接存取時可用）
+  if(!Object.keys(result).length){
+    const prefix=code==='510050'?'50ETF':code==='510300'?'300ETF':
+                 code==='510500'?'500ETF':code==='159919'?'300ETF':
+                 code==='588000'?'科創50':code;
+    for(const type of ['购','沽']){
+      try{
+        const q=`${prefix}${type}${moNum}月`;
+        const r=await fetch(
+          `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=REMGTP&count=60`,
+          {headers:{Referer:'https://www.eastmoney.com/'},cache:'no-store'});
+        const d=await r.json();
+        for(const item of d?.QuotationCodeTable?.Data||[])
+          result[item.Code]={name:item.Name,mkt:item.MktNum||'10'};
+      }catch(e){}
+    }
   }
   return result;
 }
@@ -538,6 +557,30 @@ async function refresh(){
   }
 
   render();
+  publishData();
+}
+
+// ── 跨分頁同步（供期權記錄表使用）──────────────
+const _BC = (()=>{ try{ return new BroadcastChannel('joption_sync'); }catch(e){ return null; } })();
+
+function publishData(){
+  const g=id=>document.getElementById(id)?.textContent||'';
+  const n=s=>parseFloat(s.replace(/,/g,''))||0;
+  const payload={
+    ts     : Date.now(),
+    spot   : spot,
+    name   : g('h-name'),
+    ul     : document.getElementById('sel-ul')?.value||'',
+    cv     : n(g('h-cv')),     // 買權總值(元)
+    pv     : n(g('h-pv')),     // 賣權總值(元)
+    delta  : parseFloat(g('h-delta'))||0,
+    tv     : n(g('h-tv')),     // 市場總時間價值
+    expiry : g('h-exp'),
+    days   : parseInt(g('h-days'))||0,
+    month  : document.getElementById('sel-month')?.value||''
+  };
+  try{ localStorage.setItem('joption_live', JSON.stringify(payload)); }catch(e){}
+  try{ if(_BC) _BC.postMessage(payload); }catch(e){}
 }
 
 // ── 自動刷新（持續每 3 秒，不限交易時段）────
