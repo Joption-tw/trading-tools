@@ -1,0 +1,29 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>交易工具</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#0d1117;color:#e6edf3;font-family:'微軟正黑體',sans-serif;
+     display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:24px;}
+h1{font-size:22px;color:#58a6ff;}
+.links{display:flex;gap:20px;}
+a{
+  display:block;padding:18px 32px;border-radius:8px;text-decoration:none;
+  font-size:15px;font-weight:700;text-align:center;transition:filter .2s;
+}
+a:hover{filter:brightness(1.2);}
+.a1{background:#0d2818;border:1px solid #3fb950;color:#3fb950;}
+.a2{background:#161b22;border:1px solid #58a6ff;color:#58a6ff;}
+small{color:#8b949e;font-size:11px;margin-top:4px;display:block;}
+</style>
+</head>
+<body>
+<h1>⚙ 交易工具</h1>
+<div class="links">
+  <a class="a1" href="quotes.html">📊 A股ETF期權報價<small>即時行情 · Black-Scholes</small></a>
+  <a class="a2" href="logger.html">📝 期權記錄表<small>每分鐘記錄 · 15:00 自動存檔</small></a>
+</div>
+</body>
+</html>

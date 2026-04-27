@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>期權記錄表</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#0d1117;color:#e6edf3;font-family:'Consolas','微軟正黑體',monospace;font-size:12px;}
+
+/* ── 頂部輸入列 ── */
+#topbar{
+  background:#161b22;border-bottom:2px solid #30363d;
+  padding:6px 10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  position:sticky;top:0;z-index:50;
+}
+.field{display:flex;flex-direction:column;gap:2px;}
+.field label{font-size:10px;color:#8b949e;white-space:nowrap;}
+.field input{
+  background:#21262d;border:1px solid #30363d;color:#e6edf3;
+  padding:3px 6px;border-radius:4px;font-size:12px;font-family:inherit;
+  width:90px;text-align:right;
+}
+.field input:focus{outline:none;border-color:#58a6ff;background:#0d1117;}
+.field input.wide{width:110px;}
+.field input.narrow{width:64px;}
+
+.sep-v{width:1px;background:#30363d;height:42px;margin:0 2px;}
+
+.btn{
+  padding:5px 12px;border:none;border-radius:4px;cursor:pointer;
+  font-size:11px;font-weight:700;white-space:nowrap;transition:filter .15s;
+}
+.btn:hover{filter:brightness(1.2);}
+.btn-blue {background:#1f6feb;color:#fff;}
+.btn-green{background:#196c2e;color:#3fb950;border:1px solid #3fb950;}
+.btn-red  {background:#3d1a1a;color:#f85149;border:1px solid #f85149;}
+.btn-gray {background:#21262d;color:#8b949e;border:1px solid #30363d;}
+
+#status-bar{
+  margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11px;
+}
+.dot{width:8px;height:8px;border-radius:50%;background:#6e7681;display:inline-block;transition:background .3s;}
+.dot.on{background:#3fb950;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.dot.on{animation:pulse 1s infinite;}
+#status-txt{color:#8b949e;}
+#counter{color:#3fb950;font-weight:700;font-size:13px;}
+
+/* ── 表格 ── */
+#table-wrap{
+  height:calc(100vh - 70px);overflow:auto;
+}
+table{border-collapse:collapse;width:100%;min-width:900px;}
+thead tr th{
+  position:sticky;top:0;z-index:20;
+  background:#1c2128;color:#8b949e;
+  padding:4px 6px;font-size:10px;font-weight:700;
+  border:1px solid #21262d;white-space:nowrap;text-align:center;
+  user-select:none;
+}
+tbody tr td{
+  padding:3px 7px;border:1px solid #1a1f27;
+  white-space:nowrap;font-size:11px;text-align:right;
+}
+tbody tr:nth-child(odd){background:#0f1318;}
+tbody tr:nth-child(even){background:#0d1117;}
+tbody tr:hover{background:#192231 !important;}
+tbody tr:first-child td{background:#0a2040 !important;font-weight:700;}
+
+td.date{text-align:center;color:#8b949e;}
+td.time{text-align:center;color:#79c0ff;font-weight:700;}
+td.week{text-align:center;color:#e3b341;}
+td.tv  {color:#f0a500;font-weight:700;}
+td.acct{color:#3fb950;}
+td.fut {color:#58a6ff;}
+td.mg  {color:#e6edf3;}
+td.pos {color:#3fb950;}
+td.neg {color:#f85149;}
+td.zer {color:#6e7681;}
+
+/* ── 捲軸 ── */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:#0d1117;}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px;}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <!-- 標題 + 版本 -->
+  <div style="display:flex;flex-direction:column;justify-content:center;margin-right:4px;">
+    <span style="font-size:13px;font-weight:700;color:#f0f6fc;white-space:nowrap;">期權記錄表</span>
+    <span style="font-size:9px;color:#8b949e;white-space:nowrap;">v1.0.0 · 2026-04-27</span>
+  </div>
+  <div class="sep-v"></div>
+  <!-- 週期 -->
+  <div class="field">
+    <label>週期</label>
+    <input id="i-week" class="wide" value="台選W504" title="如：台選W504">
+  </div>
+
+  <div class="sep-v"></div>
+
+  <!-- 買/賣/總點數 -->
+  <div class="field">
+    <label>買權點數</label>
+    <input id="i-call" class="narrow" type="number" value="0" step="0.01">
+  </div>
+  <div class="field">
+    <label>賣權點數</label>
+    <input id="i-put" class="narrow" type="number" value="0" step="0.01">
+  </div>
+  <div class="field" title="買+賣 自動計算">
+    <label>總點數</label>
+    <input id="i-total" class="narrow" type="number" value="0" step="0.01" readonly
+      style="color:#8b949e;cursor:default;">
+  </div>
+  <div class="field" title="買/(買+賣) 自動計算，為0則顯示0.5">
+    <label>買賣權比值</label>
+    <input id="i-ratio" class="narrow" type="number" value="0.5" step="0.01" readonly
+      style="color:#8b949e;cursor:default;">
+  </div>
+
+  <div class="sep-v"></div>
+
+  <!-- 主要數據 -->
+  <div class="field">
+    <label>時間價值</label>
+    <input id="i-tv" class="wide" type="number" value="0" step="0.01">
+  </div>
+  <div class="field">
+    <label>帳戶總值</label>
+    <input id="i-acct" class="wide" type="number" value="0" step="0.01">
+  </div>
+  <div class="field">
+    <label>期貨指數</label>
+    <input id="i-fut" class="wide" type="number" value="0" step="1">
+  </div>
+  <div class="field">
+    <label>保證金</label>
+    <input id="i-margin" class="wide" type="number" value="0" step="0.01">
+  </div>
+  <div class="field">
+    <label>手數</label>
+    <input id="i-lots" class="narrow" type="number" value="0" step="1">
+  </div>
+
+  <div class="sep-v"></div>
+
+  <!-- 按鈕 -->
+  <button class="btn btn-blue"  onclick="recordNow()" title="立即記錄一筆">📝 記錄</button>
+  <button class="btn btn-green" onclick="toggleAuto()" id="auto-btn">▶ 自動記錄</button>
+  <button class="btn btn-gray"  onclick="exportCSV()" title="匯出 CSV（可用 Excel 開啟）">💾 匯出CSV</button>
+  <button class="btn btn-red"   onclick="clearLog()"  title="清除所有記錄">🗑 清除</button>
+
+  <div id="status-bar">
+    <span class="dot" id="dot"></span>
+    <span id="status-txt">就緒</span>
+    <span id="counter">0</span><span style="color:#8b949e;font-size:11px"> 筆</span>
+    <span style="width:1px;background:#30363d;height:20px;display:inline-block;margin:0 4px;"></span>
+    <span id="save-notice" style="color:#e3b341;font-size:10px;white-space:nowrap;">計算中…</span>
+  </div>
+</div>
+
+<div id="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>日期</th>
+      <th>時間</th>
+      <th>週期</th>
+      <th>買權點數</th>
+      <th>賣權點數</th>
+      <th>總點數</th>
+      <th>買賣權比值</th>
+      <th>時間價值</th>
+      <th>帳戶總值</th>
+      <th>期貨指數</th>
+      <th>保證金</th>
+      <th>手數</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+</div>
+
+<script>
+// ── 儲存 ────────────────────────────────────────
+const STORE_KEY = 'optlog_v1';
+let records = [];
+try{ records = JSON.parse(localStorage.getItem(STORE_KEY)||'[]'); }catch(e){ records=[]; }
+
+let autoTimer = null;
+let countdown = 0;
+let cdTimer   = null;
+
+// ── 即時計算總點數與比值 ─────────────────────────
+function calcTotals(){
+  const c = parseFloat(document.getElementById('i-call').value)||0;
+  const p = parseFloat(document.getElementById('i-put').value)||0;
+  const total = c + p;
+  document.getElementById('i-total').value = total ? total.toFixed(2) : 0;
+  const ratio = total > 0 ? (c/total) : 0.5;
+  document.getElementById('i-ratio').value = ratio.toFixed(4);
+}
+document.getElementById('i-call').addEventListener('input', calcTotals);
+document.getElementById('i-put' ).addEventListener('input', calcTotals);
+
+// ── 取得現在時間 ───────────────────────────────
+function nowStr(){
+  const d = new Date();
+  const date = `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+  const time = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  return {date, time};
+}
+
+// ── 記錄一筆 ───────────────────────────────────
+function recordNow(){
+  const {date, time} = nowStr();
+  const c     = parseFloat(document.getElementById('i-call').value)||0;
+  const p     = parseFloat(document.getElementById('i-put').value)||0;
+  const total = c + p;
+  const ratio = total > 0 ? (c/total) : 0.5;
+
+  const row = {
+    date,
+    time,
+    week  : document.getElementById('i-week').value.trim(),
+    call  : c,
+    put   : p,
+    total : total,
+    ratio : +ratio.toFixed(4),
+    tv    : parseFloat(document.getElementById('i-tv').value)||0,
+    acct  : parseFloat(document.getElementById('i-acct').value)||0,
+    fut   : parseFloat(document.getElementById('i-fut').value)||0,
+    margin: parseFloat(document.getElementById('i-margin').value)||0,
+    lots  : parseFloat(document.getElementById('i-lots').value)||0,
+  };
+
+  records.push(row);
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(records)); }catch(e){}
+  renderTable();
+
+  // 閃爍提示
+  const dot = document.getElementById('dot');
+  dot.style.background='#f0a500';
+  setTimeout(()=>dot.style.background= autoTimer?'#3fb950':'#6e7681', 300);
+}
+
+// ── 自動記錄開關 ───────────────────────────────
+function toggleAuto(){
+  if(autoTimer){
+    // 停止
+    clearInterval(autoTimer);
+    clearInterval(cdTimer);
+    autoTimer = cdTimer = null;
+    document.getElementById('auto-btn').textContent = '▶ 自動記錄';
+    document.getElementById('auto-btn').className   = 'btn btn-green';
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('status-txt').textContent = '已停止';
+  } else {
+    // 立即記一筆，再每分鐘一筆
+    recordNow();
+    countdown = 60;
+    autoTimer = setInterval(()=>{
+      recordNow();
+      countdown = 60;
+    }, 60000);
+    cdTimer = setInterval(()=>{
+      countdown--;
+      document.getElementById('status-txt').textContent =
+        `自動記錄中… 下次 ${countdown}s`;
+    }, 1000);
+    document.getElementById('auto-btn').textContent = '⏹ 停止';
+    document.getElementById('auto-btn').className   = 'btn btn-red';
+    document.getElementById('dot').className = 'dot on';
+    document.getElementById('status-txt').textContent = '自動記錄中… 下次 60s';
+  }
+}
+
+// ── 渲染表格 ───────────────────────────────────
+function renderTable(){
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  document.getElementById('counter').textContent = records.length;
+
+  // 最新的在最上方
+  for(let i = records.length-1; i >= 0; i--){
+    const r = records[i];
+    const isFirst = (i === records.length-1);
+    const tr = document.createElement('tr');
+
+    const cn=(v,pos='pos',neg='neg')=>v>0?pos:v<0?neg:'zer';
+
+    tr.innerHTML = `
+      <td class="date">${records.length - i}</td>
+      <td class="date">${r.date}</td>
+      <td class="time">${r.time}</td>
+      <td class="week">${r.week}</td>
+      <td class="${cn(r.call)}">${fmt(r.call)}</td>
+      <td class="${cn(r.put)}">${fmt(r.put)}</td>
+      <td class="${cn(r.total)}">${fmt(r.total)}</td>
+      <td class="mg">${r.ratio}</td>
+      <td class="tv">${fmtN(r.tv)}</td>
+      <td class="acct">${fmtN(r.acct)}</td>
+      <td class="fut">${r.fut ? r.fut.toLocaleString() : '—'}</td>
+      <td class="mg">${fmtN(r.margin)}</td>
+      <td class="${cn(r.lots)}">${r.lots || 0}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function fmt(v)  { return v !== 0 ? v.toFixed(2) : '0'; }
+function fmtN(v) { return v !== 0 ? v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0'; }
+
+// ── 匯出 CSV（isAuto=true 為自動存檔）────────────
+function exportCSV(isAuto=false){
+  if(!records.length){
+    if(!isAuto) alert('尚無記錄');
+    return;
+  }
+  const header = ['#','日期','時間','週期','買權點數','賣權點數','總點數','買賣權比值','時間價值','帳戶總值','期貨指數','保證金','手數'];
+  const rows   = records.map((r,i)=>[
+    i+1, r.date, r.time, r.week,
+    r.call, r.put, r.total, r.ratio,
+    r.tv, r.acct, r.fut, r.margin, r.lots
+  ]);
+  const bom  = '﻿'; // UTF-8 BOM for Excel
+  const csv  = bom + [header, ...rows].map(r=>r.join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+
+  // 檔名：期權記錄_商品別_日期.csv
+  const d    = new Date();
+  const week = (document.getElementById('i-week').value.trim()||'未知商品')
+                 .replace(/[\\/:*?"<>|]/g,'_'); // 移除非法字元
+  const date = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  a.href     = url;
+  a.download = `期權記錄_${week}_${date}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  if(isAuto){
+    document.getElementById('save-notice').textContent =
+      `✅ 自動存檔完成 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    setTimeout(()=>{ updateNextSave(); }, 4000);
+  }
+}
+
+// ── 自動 15:00 存檔 ───────────────────────────
+let lastAutoSaveDate = '';
+
+function checkAutoSave(){
+  const d = new Date();
+  const h = d.getHours(), m = d.getMinutes();
+  const dateKey = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  if(h === 15 && m === 0 && lastAutoSaveDate !== dateKey){
+    lastAutoSaveDate = dateKey;
+    exportCSV(true);
+  }
+}
+
+function updateNextSave(){
+  const el = document.getElementById('save-notice');
+  if(!el) return;
+  const d  = new Date();
+  const h  = d.getHours(), m = d.getMinutes(), s = d.getSeconds();
+  const secToday = h*3600 + m*60 + s;
+  const sec1500  = 15*3600;
+  let diff = sec1500 - secToday;
+  if(diff <= 0) diff += 86400; // 明天 15:00
+  const hh = Math.floor(diff/3600);
+  const mm = Math.floor((diff%3600)/60);
+  const ss = diff % 60;
+  const label = hh > 0
+    ? `下次自動存檔：${hh}h ${mm}m 後 (15:00)`
+    : `下次自動存檔：${mm}m ${String(ss).padStart(2,'0')}s 後 (15:00)`;
+  el.textContent = label;
+}
+
+// 每秒更新倒數；每10秒偵測是否到15:00
+setInterval(updateNextSave, 1000);
+setInterval(checkAutoSave,  10000);
+
+// ── 清除 ────────────────────────────────────────
+function clearLog(){
+  if(!records.length){ return; }
+  if(!confirm(`確定清除全部 ${records.length} 筆記錄？`)) return;
+  records = [];
+  localStorage.removeItem(STORE_KEY);
+  renderTable();
+}
+
+// ── 初始化 ──────────────────────────────────────
+renderTable();
+updateNextSave();
+</script>
+</body>
+</html>

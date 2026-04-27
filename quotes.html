@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>A股ETF期權報價</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0d1117; color:#e6edf3; font-family:'Consolas','微軟正黑體',monospace; font-size:12px; overflow:hidden; }
+
+#header {
+  background:#161b22; border-bottom:2px solid #30363d;
+  padding:5px 8px; display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+}
+.stat { display:flex; flex-direction:column; min-width:72px; }
+.stat-label { color:#8b949e; font-size:10px; white-space:nowrap; }
+.stat-val { font-size:13px; font-weight:700; white-space:nowrap; }
+.green{color:#3fb950;} .red{color:#f85149;} .blue{color:#58a6ff;}
+.orange{color:#e3b341;} .gray{color:#8b949e;} .white{color:#f0f6fc;}
+.sep{ width:1px; background:#30363d; height:38px; margin:0 2px; }
+
+#ctrl{ display:flex; gap:6px; align-items:center; margin-left:auto; }
+#ctrl select,#ctrl input{
+  background:#21262d; border:1px solid #30363d; color:#e6edf3;
+  padding:3px 7px; border-radius:4px; font-size:11px; cursor:pointer;
+}
+#ctrl select:focus,#ctrl input:focus{ outline:none; border-color:#58a6ff; }
+#refresh-btn{
+  background:#1f6feb; border:none; color:#fff;
+  padding:4px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:700;
+  transition:background .2s;
+}
+#refresh-btn:hover{background:#388bfd;}
+#refresh-btn.loading{background:#6e7681;}
+#status{font-size:10px;color:#8b949e;}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#6e7681;display:inline-block;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.live{animation:blink 1.5s infinite; background:#3fb950 !important;}
+
+#table-wrap{ overflow:auto; height:calc(100vh - 60px); }
+table{ border-collapse:collapse; width:100%; }
+thead tr th{
+  position:sticky; top:0; z-index:20;
+  padding:3px 4px; text-align:center; font-size:10px; font-weight:700;
+  white-space:nowrap; border:1px solid #21262d; user-select:none;
+}
+th.ch{ background:#0d2818; color:#3fb950; }
+th.ph{ background:#2d0a0a; color:#f85149; }
+th.kh{ background:#1c2128; color:#79c0ff; }
+
+tbody tr td{
+  padding:2px 5px; text-align:right;
+  border:1px solid #1a1f27; white-space:nowrap; font-size:11px;
+}
+tbody tr:hover{ filter:brightness(1.18); }
+tr.atm td{ background:#0c2a4a !important; }
+tr.atm td.kc{ background:#0f3460 !important; color:#f0f6fc !important; font-size:12px; }
+
+td.cv{ color:#3fb950; }
+td.pv{ color:#f85149; }
+td.kc{ background:#1c2128; color:#e6edf3; text-align:center; font-weight:700; font-size:12px; }
+td.pos{color:#3fb950;} td.neg{color:#f85149;} td.zer{color:#6e7681;}
+td.hp{ background:#192231 !important; color:#f0f6fc; }
+
+input.qty{
+  width:48px; background:#0d1117; border:1px solid #388bfd;
+  color:#f0f6fc; text-align:center; padding:1px 2px; font-size:11px; border-radius:2px;
+}
+input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
+
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:#0d1117;}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px;}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="stat">
+    <span class="stat-label">標的</span>
+    <span class="stat-val blue" id="h-name">—</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">現價</span>
+    <span class="stat-val white" id="h-spot">—</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">漲跌%</span>
+    <span class="stat-val" id="h-chg">—</span>
+  </div>
+  <div class="sep"></div>
+  <div class="stat">
+    <span class="stat-label">買權總值(元)</span>
+    <span class="stat-val green" id="h-cv">0</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">賣權總值(元)</span>
+    <span class="stat-val red" id="h-pv">0</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">持倉總Delta</span>
+    <span class="stat-val blue" id="h-delta">0.000</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">市場總時間值(元)</span>
+    <span class="stat-val orange" id="h-tv">0</span>
+  </div>
+  <div class="sep"></div>
+  <div class="stat">
+    <span class="stat-label">到期日</span>
+    <span class="stat-val" id="h-exp">—</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">剩餘天數</span>
+    <span class="stat-val orange" id="h-days">—</span>
+  </div>
+  <div class="sep"></div>
+  <div id="ctrl">
+    <span class="stat-label">標的</span>
+    <select id="sel-ul">
+      <option value="510050">上証50ETF (510050)</option>
+      <option value="510300">滬深300ETF-華泰 (510300)</option>
+      <option value="510500">中証500ETF (510500)</option>
+      <option value="159919">滬深300ETF-嘉實 (159919)</option>
+      <option value="588000">科創50ETF (588000)</option>
+    </select>
+    <span class="stat-label">月份</span>
+    <select id="sel-month"></select>
+    <button id="refresh-btn" onclick="refresh()" title="手動立即刷新">⟳ 刷新</button>
+    <button id="demo-btn" onclick="loadDemo()" title="填入範例資料預覽排版" style="background:#2d3a1e;border:1px solid #3fb950;color:#3fb950;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">📊 展示模式</button>
+    <span id="status">—</span>
+    <span class="live-dot" id="dot"></span>
+  </div>
+</div>
+
+<div id="table-wrap">
+<table>
+  <thead><tr>
+    <th class="ch">OI</th>
+    <th class="ch">最新價</th>
+    <th class="ch">IV%</th>
+    <th class="ch">Delta</th>
+    <th class="ch">Theta/日</th>
+    <th class="ch">Vega/%</th>
+    <th class="ch">時間值</th>
+    <th class="ch">口數</th>
+    <th class="ch">市值(元)</th>
+    <th class="ch">Delta總</th>
+    <th class="ch">買一</th>
+    <th class="ch">賣一</th>
+    <th class="ch">漲跌</th>
+    <th class="ch">漲跌%</th>
+    <th class="ch">成交量</th>
+    <th class="kh" style="min-width:68px">履約價</th>
+    <th class="ph">成交量</th>
+    <th class="ph">漲跌%</th>
+    <th class="ph">漲跌</th>
+    <th class="ph">買一</th>
+    <th class="ph">賣一</th>
+    <th class="ph">口數</th>
+    <th class="ph">市值(元)</th>
+    <th class="ph">Delta總</th>
+    <th class="ph">時間值</th>
+    <th class="ph">Vega/%</th>
+    <th class="ph">Theta/日</th>
+    <th class="ph">Delta</th>
+    <th class="ph">IV%</th>
+    <th class="ph">最新價</th>
+    <th class="ph">OI</th>
+  </tr></thead>
+  <tbody id="tbody"></tbody>
+</table>
+</div>
+
+<script>
+// ── 常數 ─────────────────────────────────────
+const LOT   = 10000;   // 每張合約單位數
+const R     = 0.02;    // 無風險利率
+const TDAYS = 242;     // 年交易日數
+
+// ── Black-Scholes ─────────────────────────────
+function Ncdf(x){
+  const a=[0.254829592,-0.284496736,1.421413741,-1.453152027,1.061405429], p=0.3275911;
+  const s=x<0?-1:1; x=Math.abs(x)/Math.SQRT2;
+  const t=1/(1+p*x);
+  const y=1-((((a[4]*t+a[3])*t+a[2])*t+a[1])*t+a[0])*t*Math.exp(-x*x);
+  return .5*(1+s*y);
+}
+function Npdf(x){return Math.exp(-.5*x*x)/Math.sqrt(2*Math.PI);}
+
+function bsPrice(S,K,T,r,v,c){
+  if(T<=0||v<=0) return c?Math.max(0,S-K):Math.max(0,K-S);
+  const d1=(Math.log(S/K)+(r+.5*v*v)*T)/(v*Math.sqrt(T)), d2=d1-v*Math.sqrt(T);
+  return c?S*Ncdf(d1)-K*Math.exp(-r*T)*Ncdf(d2):K*Math.exp(-r*T)*Ncdf(-d2)-S*Ncdf(-d1);
+}
+function calcIV(mkt,S,K,T,r,c){
+  if(mkt<=0||T<=0) return null;
+  let v=.30;
+  for(let i=0;i<150;i++){
+    const p=bsPrice(S,K,T,r,v,c);
+    const d1=(Math.log(S/K)+(r+.5*v*v)*T)/(v*Math.sqrt(T));
+    const vega=S*Npdf(d1)*Math.sqrt(T);
+    if(vega<1e-10) break;
+    const dif=p-mkt; if(Math.abs(dif)<1e-8) break;
+    v-=dif/vega; v=Math.max(.001,Math.min(v,9.99));
+  }
+  return v>.001&&v<9.99?v:null;
+}
+function greeks(S,K,T,r,v,c){
+  if(T<=0||!v) return{delta:c?1:0,gamma:0,theta:0,vega:0};
+  const d1=(Math.log(S/K)+(r+.5*v*v)*T)/(v*Math.sqrt(T)), d2=d1-v*Math.sqrt(T);
+  const pdf=Npdf(d1);
+  const delta=c?Ncdf(d1):Ncdf(d1)-1;
+  const gamma=pdf/(S*v*Math.sqrt(T));
+  const theta=c
+    ?(-S*pdf*v/(2*Math.sqrt(T))-r*K*Math.exp(-r*T)*Ncdf(d2))/TDAYS
+    :(-S*pdf*v/(2*Math.sqrt(T))+r*K*Math.exp(-r*T)*Ncdf(-d2))/TDAYS;
+  const vega=S*pdf*Math.sqrt(T)/100;
+  return{delta,gamma,theta,vega};
+}
+
+// ── 到期日（第4個週三）────────────────────────
+function expiry4thWed(ym){ // "202505"
+  const y=+ym.slice(0,4), m=+ym.slice(4,6)-1;
+  const d=new Date(y,m,1); let n=0;
+  while(n<4){ if(d.getDay()===3)n++; if(n<4)d.setDate(d.getDate()+1); }
+  return d;
+}
+function daysLeft(e){ return Math.max(0,Math.round((e-new Date())/86400000)); }
+function yearsLeft(e){ return Math.max(0,(e-new Date())/31536000000); }
+
+// ── 狀態 ─────────────────────────────────────
+let spot=0, prevClose=0, chainData={}, qtyMap={}, expiryDate=null;
+
+// ── 月份選單（自動跳過已結算月份）──────────────
+function buildMonths(){
+  const sel=document.getElementById('sel-month');
+  const prev=sel.value; // 保留目前選擇
+  sel.innerHTML='';
+  const now=new Date();
+  let count=0, offset=0;
+  while(count<6){
+    const d=new Date(now.getFullYear(),now.getMonth()+offset,1);
+    const ym=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`;
+    const exp=expiry4thWed(ym);
+    // 只顯示結算日在今天（含）之後的月份
+    if(exp>=now){
+      const label=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const opt=document.createElement('option');
+      opt.value=ym; opt.textContent=label;
+      sel.appendChild(opt);
+      count++;
+    }
+    offset++;
+    if(offset>20) break;
+  }
+  // 若之前選的月份還存在就保留
+  if(prev&&[...sel.options].some(o=>o.value===prev)) sel.value=prev;
+}
+
+// ── 抓現價（東方財富，無 CORS 問題）───────────
+async function fetchSpot(code){
+  const mkt=code.startsWith('5')?'1':'0'; // 1=滬 0=深
+  const r=await fetch(
+    `https://push2.eastmoney.com/api/qt/stock/get?secid=${mkt}.${code}&fields=f43,f57,f58,f169,f170&fltt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&_=${Date.now()}`,
+    {headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
+  const d=await r.json();
+  const dt=d?.data;
+  if(!dt||!dt.f43) return;
+  spot    = typeof dt.f43 ==='number'?dt.f43:parseFloat(dt.f43)||0;
+  const chgA = typeof dt.f169==='number'?dt.f169:0;
+  prevClose   = spot - chgA;
+  document.getElementById('h-name').textContent=dt.f58||code;
+}
+
+// ── 抓合約代碼（東方財富搜尋）──────────────────
+async function fetchCodes(code, moNum){
+  const prefix=code==='510050'?'50ETF':
+                code==='510300'?'300ETF':
+                code==='510500'?'500ETF':
+                code==='159919'?'300ETF':
+                code==='588000'?'科創50':code;
+  const result={};
+  for(const type of ['购','沽']){
+    const q=`${prefix}${type}${moNum}月`;
+    const r=await fetch(
+      `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=REMGTP&count=60`,
+      {headers:{Referer:'https://www.eastmoney.com/'},cache:'no-store'});
+    const d=await r.json();
+    for(const item of d?.QuotationCodeTable?.Data||[])
+      // MktNum: "10"=上交所期權, "0"=深交所期權
+      result[item.Code]={name:item.Name, mkt:item.MktNum||'10'};
+  }
+  return result;
+}
+
+// ── 解析合約名稱 ──────────────────────────────
+function parseName(name){
+  const isCall=name.includes('购')||name.includes('C');
+  const nums=name.match(/\d+/g)||[];
+  // 最後一段數字是履約價×1000
+  const strikeRaw=parseInt(nums[nums.length-1])||0;
+  const monthNum =nums.length>=2?parseInt(nums[nums.length-2]):0;
+  return{isCall, strike:strikeRaw/1000, monthNum};
+}
+
+// ── 抓即時報價（東方財富）────────────────────
+// codesMap: { code: {name, mkt} }
+async function fetchQuotes(codesMap){
+  const entries=Object.entries(codesMap);
+  if(!entries.length) return{};
+  // 使用各合約正確的市場代碼（10=滬, 0=深）
+  const secids=entries.map(([c,{mkt}])=>`${mkt}.${c}`).join(',');
+  const url=`https://push2.eastmoney.com/api/qt/ulist/get?secids=${encodeURIComponent(secids)}&fields=f2,f3,f4,f5,f12,f14,f15,f17,f18&fltt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&_=${Date.now()}`;
+  const r=await fetch(url,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
+  const d=await r.json();
+  const out={};
+  for(const item of d?.data?.diff||[]){
+    const c=String(item.f12||'');
+    const L=item.f2,B=item.f17,A=item.f15,chg=item.f3,chgA=item.f4,vol=item.f5,oi=item.f18;
+    out[c]={
+      last: typeof L==='number'?L/1000:null,
+      bid:  typeof B==='number'?B/1000:null,
+      ask:  typeof A==='number'?A/1000:null,
+      chg:  typeof chg==='number'?chg:null,    // 漲跌% (如 +2.50)
+      chgA: typeof chgA==='number'?chgA/1000:null, // 漲跌額（元）
+      vol:  typeof vol==='number'?vol:0,
+      oi:   typeof oi==='number'?oi:null        // 持倉量
+    };
+  }
+  return out;
+}
+
+// ── 渲染 ──────────────────────────────────────
+function render(){
+  const body=document.getElementById('tbody');
+  const strikes=Object.keys(chainData).map(Number).sort((a,b)=>a-b);
+  if(!strikes.length){
+    body.innerHTML=`<tr><td colspan="31" style="text-align:center;padding:30px;color:#8b949e">
+      休市中 / 無資料 — 週一至週五 09:30~15:00 顯示即時數據</td></tr>`;
+    return;
+  }
+  const atm=spot>0?strikes.reduce((a,b)=>Math.abs(b-spot)<Math.abs(a-spot)?b:a):null;
+  const T=expiryDate?yearsLeft(expiryDate):30/365;
+
+  body.innerHTML='';
+  for(const strike of strikes){
+    const{c,p}=chainData[strike]||{};
+    const isAtm=strike===atm;
+    const tr=document.createElement('tr');
+    if(isAtm) tr.classList.add('atm');
+
+    const ck=`C_${strike}`, pk=`P_${strike}`;
+    const cQ=qtyMap[ck]||0, pQ=qtyMap[pk]||0;
+
+    // Call Greeks
+    let cIV=null,cG={delta:0,gamma:0,theta:0,vega:0},cTV=0;
+    if(c?.last>0&&spot>0&&T>0){
+      cIV=calcIV(c.last,spot,strike,T,R,true);
+      if(cIV){cG=greeks(spot,strike,T,R,cIV,true);}
+      cTV=c.last-Math.max(0,spot-strike);
+    }
+    // Put Greeks
+    let pIV=null,pG={delta:0,gamma:0,theta:0,vega:0},pTV=0;
+    if(p?.last>0&&spot>0&&T>0){
+      pIV=calcIV(p.last,spot,strike,T,R,false);
+      if(pIV){pG=greeks(spot,strike,T,R,pIV,false);}
+      pTV=p.last-Math.max(0,strike-spot);
+    }
+
+    // 持倉計算
+    const cMV=cQ&&c?.last?Math.abs(cQ)*c.last*LOT:0;
+    const pMV=pQ&&p?.last?Math.abs(pQ)*p.last*LOT:0;
+    const cDT=cQ?cQ*cG.delta:0;
+    const pDT=pQ?pQ*pG.delta:0;
+
+    const f=(v,d=4)=>v!=null&&isFinite(v)?v.toFixed(d):'—';
+    const fp=(v)=>v!=null?`${v>=0?'+':''}${v.toFixed(2)}%`:'—';
+    const fc=(v)=>v!=null?`${v>=0?'+':''}${v.toFixed(4)}`:'—';
+    const fm=(v)=>v?Math.round(v).toLocaleString():'—';
+    const cc=(v)=>v>0?'pos':v<0?'neg':'zer';
+    const cv=isAtm?'':'cv', pv=isAtm?'':'pv';
+
+    // 漲跌額顯示（優先用 f4 漲跌額，無則用 —）
+    const fChgA=(v)=>v!=null&&isFinite(v)?`${v>=0?'+':''}${v.toFixed(4)}`:'—';
+    tr.innerHTML=`
+      <td class="${cv}">${c?.oi!=null?c.oi.toLocaleString():'—'}</td>
+      <td class="${cv}">${f(c?.last)}</td>
+      <td class="${cv}">${cIV!=null?(cIV*100).toFixed(1)+'%':'—'}</td>
+      <td class="${cv}">${cIV?f(cG.delta):'—'}</td>
+      <td class="${cv}">${cIV?f(cG.theta,5):'—'}</td>
+      <td class="${cv}">${cIV?f(cG.vega,5):'—'}</td>
+      <td class="${cv}${cTV>0?'':' zer'}">${c?.last>0?f(cTV):'—'}</td>
+      <td><input class="qty" type="number" step="1" placeholder="0" value="${cQ||''}" data-key="${ck}" oninput="onQty(this)"></td>
+      <td class="${cQ?'hp':''}">${fm(cMV)}</td>
+      <td class="${cc(cDT)}">${cQ?f(cDT,3):'—'}</td>
+      <td class="${cv}">${f(c?.bid)}</td>
+      <td class="${cv}">${f(c?.ask)}</td>
+      <td class="${cc(c?.chgA)}">${fChgA(c?.chgA)}</td>
+      <td class="${cc(c?.chg)}">${c?.chg!=null?fp(c.chg):'—'}</td>
+      <td class="${cv}">${c?.vol!=null?c.vol.toLocaleString():'—'}</td>
+      <td class="kc">${strike.toFixed(3)}</td>
+      <td class="${pv}">${p?.vol!=null?p.vol.toLocaleString():'—'}</td>
+      <td class="${cc(p?.chg)}">${p?.chg!=null?fp(p.chg):'—'}</td>
+      <td class="${cc(p?.chgA)}">${fChgA(p?.chgA)}</td>
+      <td class="${pv}">${f(p?.bid)}</td>
+      <td class="${pv}">${f(p?.ask)}</td>
+      <td><input class="qty" type="number" step="1" placeholder="0" value="${pQ||''}" data-key="${pk}" oninput="onQty(this)"></td>
+      <td class="${pQ?'hp':''}">${fm(pMV)}</td>
+      <td class="${cc(pDT)}">${pQ?f(pDT,3):'—'}</td>
+      <td class="${pv}${pTV>0?'':' zer'}">${p?.last>0?f(pTV):'—'}</td>
+      <td class="${pv}">${pIV?f(pG.vega,5):'—'}</td>
+      <td class="${pv}">${pIV?f(pG.theta,5):'—'}</td>
+      <td class="${pv}">${pIV?f(pG.delta):'—'}</td>
+      <td class="${pv}">${pIV!=null?(pIV*100).toFixed(1)+'%':'—'}</td>
+      <td class="${pv}">${f(p?.last)}</td>
+      <td class="${pv}">${p?.oi!=null?p.oi.toLocaleString():'—'}</td>
+    `;
+    body.appendChild(tr);
+  }
+
+  if(atm){
+    const el=body.querySelector('tr.atm');
+    if(el) setTimeout(()=>el.scrollIntoView({block:'center',behavior:'smooth'}),100);
+  }
+  updateSummary();
+}
+
+function onQty(input){
+  qtyMap[input.dataset.key]=parseInt(input.value)||0;
+  render();
+}
+
+function updateSummary(){
+  const T=expiryDate?yearsLeft(expiryDate):30/365;
+  let cv=0, pv=0, totalDelta=0;
+
+  // 持倉計算（需填口數）
+  for(const[key,qty] of Object.entries(qtyMap)){
+    if(!qty) continue;
+    const[side,strikeStr]=key.split('_');
+    const strike=parseFloat(strikeStr);
+    const isCall=side==='C';
+    const opt=(chainData[strike]||{})[isCall?'c':'p'];
+    if(!opt?.last) continue;
+    const price=opt.last;
+    let g={delta:0};
+    if(spot>0&&T>0){
+      const iv=calcIV(price,spot,strike,T,R,isCall);
+      if(iv) g=greeks(spot,strike,T,R,iv,isCall);
+    }
+    if(isCall) cv+=qty*price*LOT; else pv+=qty*price*LOT;
+    totalDelta+=qty*g.delta;
+  }
+
+  // 時間價值 = 所有履約價的時間值加總（不論是否有持倉）×LOT
+  let totalTV=0;
+  for(const[strikeStr,{c,p}] of Object.entries(chainData)){
+    const K=parseFloat(strikeStr);
+    if(c?.last>0&&spot>0){
+      const cTV=Math.max(0, c.last - Math.max(0, spot-K));
+      totalTV+=cTV*LOT;
+    }
+    if(p?.last>0&&spot>0){
+      const pTV=Math.max(0, p.last - Math.max(0, K-spot));
+      totalTV+=pTV*LOT;
+    }
+  }
+
+  const set=(id,v,cls)=>{const e=document.getElementById(id);if(e){e.textContent=v;e.className='stat-val '+(cls||'');}};
+  set('h-cv',   Math.round(cv).toLocaleString(),        cv>=0?'green':'red');
+  set('h-pv',   Math.round(pv).toLocaleString(),        pv>=0?'green':'red');
+  set('h-delta',totalDelta.toFixed(3),                  totalDelta>0?'blue':totalDelta<0?'red':'gray');
+  set('h-tv',   Math.round(totalTV).toLocaleString(),   'orange');
+}
+
+// ── 主刷新 ───────────────────────────────────
+async function refresh(){
+  const code =document.getElementById('sel-ul').value;
+  const ymVal=document.getElementById('sel-month').value;
+  const moNum=parseInt(ymVal.slice(4,6));
+  expiryDate=expiry4thWed(ymVal);
+
+  document.getElementById('h-exp').textContent=
+    `${expiryDate.getFullYear()}/${String(expiryDate.getMonth()+1).padStart(2,'0')}/${String(expiryDate.getDate()).padStart(2,'0')}`;
+  document.getElementById('h-days').textContent=daysLeft(expiryDate)+' 天';
+  document.getElementById('status').textContent='載入中…';
+  document.getElementById('dot').className='live-dot';
+  document.getElementById('refresh-btn').classList.add('loading');
+
+  try{
+    // 1. 現價
+    await fetchSpot(code);
+    if(spot>0){
+      const chg=spot-prevClose, chgp=chg/prevClose*100;
+      document.getElementById('h-spot').textContent=spot.toFixed(4);
+      const el=document.getElementById('h-chg');
+      el.textContent=`${chg>=0?'+':''}${chg.toFixed(4)} (${chgp>=0?'+':''}${chgp.toFixed(2)}%)`;
+      el.className='stat-val '+(chg>=0?'green':'red');
+    }
+
+    // 2. 合約代碼（含市場代碼）
+    const codesDict=await fetchCodes(code,moNum);
+    const filtered={};
+    for(const[c,{name,mkt}] of Object.entries(codesDict)){
+      const{monthNum}=parseName(name);
+      if(monthNum===moNum) filtered[c]={name,mkt};
+    }
+
+    // 3. 即時報價
+    const quotes=Object.keys(filtered).length?await fetchQuotes(filtered):{};
+
+    // 4. 組裝 chainData
+    chainData={};
+    for(const[c,{name}] of Object.entries(filtered)){
+      const{isCall,strike}=parseName(name);
+      const q=quotes[c]||{};
+      if(!chainData[strike]) chainData[strike]={c:null,p:null};
+      const obj={last:q.last??null, bid:q.bid??null, ask:q.ask??null,
+                 chg:q.chg??null, chgA:q.chgA??null,
+                 vol:q.vol??null, oi:q.oi??null};
+      if(isCall) chainData[strike].c=obj;
+      else chainData[strike].p=obj;
+    }
+
+    const cnt=Object.keys(chainData).length;
+    const hasData=Object.values(chainData).some(v=>v.c?.last||v.p?.last);
+    document.getElementById('status').textContent=
+      hasData?`更新：${new Date().toLocaleTimeString('zh-TW')}  ${cnt}個履約價`
+             :`休市 / 無即時報價（${cnt}個履約價架構）`;
+    document.getElementById('dot').className='live-dot'+(hasData?' live':'');
+
+  }catch(e){
+    document.getElementById('status').textContent='錯誤：'+e.message;
+    document.getElementById('dot').className='live-dot';
+    console.error(e);
+  }finally{
+    document.getElementById('refresh-btn').classList.remove('loading');
+  }
+
+  render();
+}
+
+// ── 自動刷新（持續每 3 秒，不限交易時段）────
+setInterval(()=>refresh(), 3000);
+
+// ── 展示模式（用來預覽排版，資料非即時）────────
+function loadDemo(){
+  // 模擬 50ETF 現價 2.845
+  spot=2.845; prevClose=2.810;
+  document.getElementById('h-name').textContent='上証50ETF';
+  document.getElementById('h-spot').textContent=spot.toFixed(4);
+  const el=document.getElementById('h-chg');
+  el.textContent='+0.0350 (+1.24%)'; el.className='stat-val green';
+
+  // 履約價區間
+  const strikes=[2.55,2.60,2.65,2.70,2.75,2.80,2.85,2.90,2.95,3.00,3.05,3.10];
+  const T=28/365; // 約28天
+  chainData={};
+
+  const rng=(mn,mx)=>+(mn+(mx-mn)*Math.random()).toFixed(4);
+  const rngI=(mn,mx)=>Math.floor(mn+(mx-mn)*Math.random());
+
+  for(const K of strikes){
+    const mon=Math.abs(spot-K)/spot;
+    // IV 微笑曲線：價外 IV 較高
+    const cIV=0.22+mon*0.18;
+    const pIV=0.23+mon*0.20;
+    const cL=Math.max(0.0001,Math.round(bsPrice(spot,K,T,R,cIV,true)*10000)/10000);
+    const pL=Math.max(0.0001,Math.round(bsPrice(spot,K,T,R,pIV,false)*10000)/10000);
+    const spread=0.0005;
+    chainData[K]={
+      c:{
+        last:cL,
+        bid:Math.max(0.0001,+(cL-spread).toFixed(4)),
+        ask:+(cL+spread).toFixed(4),
+        chg: rng(-3,8),
+        chgA:+(cL*rng(-0.03,0.08)).toFixed(4),
+        vol: rngI(500,80000),
+        oi:  rngI(5000,300000)
+      },
+      p:{
+        last:pL,
+        bid:Math.max(0.0001,+(pL-spread).toFixed(4)),
+        ask:+(pL+spread).toFixed(4),
+        chg: rng(-8,3),
+        chgA:+(pL*rng(-0.08,0.03)).toFixed(4),
+        vol: rngI(300,60000),
+        oi:  rngI(3000,250000)
+      }
+    };
+  }
+
+  // 到期日用 sel-month 目前值
+  const ym=document.getElementById('sel-month').value;
+  expiryDate=expiry4thWed(ym);
+  document.getElementById('h-exp').textContent=
+    `${expiryDate.getFullYear()}/${String(expiryDate.getMonth()+1).padStart(2,'0')}/${String(expiryDate.getDate()).padStart(2,'0')}`;
+  document.getElementById('h-days').textContent=daysLeft(expiryDate)+' 天';
+  document.getElementById('status').textContent='⚠ 展示模式 — 資料非即時';
+  document.getElementById('dot').className='live-dot';
+  render();
+}
+
+// ── 初始化 ──────────────────────────────────
+buildMonths();
+refresh();
+</script>
+</body>
+</html>
