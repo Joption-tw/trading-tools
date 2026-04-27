@@ -129,6 +129,11 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <button id="demo-btn" onclick="loadDemo()" title="填入範例資料預覽排版" style="background:#2d3a1e;border:1px solid #3fb950;color:#3fb950;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">📊 展示模式</button>
     <span id="status">—</span>
     <span class="live-dot" id="dot"></span>
+    <div class="sep"></div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
+      <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
+      <span style="font-size:9px;color:#8b949e;">v1.2.0 · A股ETF期權報價</span>
+    </div>
   </div>
 </div>
 
@@ -272,42 +277,50 @@ async function fetchSpot(code){
   document.getElementById('h-name').textContent=dt.f58||code;
 }
 
-// ── 抓合約代碼（東方財富 slist，無 CORS 問題）───
+// ── 抓合約代碼 ────────────────────────────────
+// 遠端（GitHub Pages）自動加 CORS Proxy，本機直連
+const CORS_PROXY = (() => {
+  const h = window.location.hostname;
+  return (h === 'localhost' || h === '127.0.0.1' || h === '')
+    ? ''                          // 本機直連
+    : 'https://corsproxy.io/?';  // 遠端走 proxy
+})();
+
 async function fetchCodes(code, moNum){
   const result={};
+  const prefix=code==='510050'?'50ETF':code==='510300'?'300ETF':
+               code==='510500'?'500ETF':code==='159919'?'300ETF':
+               code==='588000'?'科創50':code;
 
-  // 主要方案：push2 slist（與現價同域，GitHub Pages 無 CORS 問題）
-  try{
-    const url=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
-      `&fields=f12,f13,f14&pn=1&pz=500&po=1&np=1`+
-      `&ut=fa5fd1943c7b386f172d6893dbfba10b&fid=f12`+
-      `&fs=b:${code}+f:!50&_=${Date.now()}`;
-    const r=await fetch(url,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
-    const d=await r.json();
-    for(const item of d?.data?.diff||[]){
-      const c=String(item.f12||'');
-      const name=item.f14||'';
-      const mkt=String(item.f13||'10');
-      if(c&&name) result[c]={name,mkt};
-    }
-  }catch(e){ console.warn('slist 失敗，改用搜尋 API',e); }
+  // 主要方案：searchapi（本機直連 / 遠端透過 proxy）
+  for(const type of ['购','沽']){
+    try{
+      const q=`${prefix}${type}${moNum}月`;
+      const target=`https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=REMGTP&count=60`;
+      const url=CORS_PROXY ? CORS_PROXY+encodeURIComponent(target) : target;
+      const r=await fetch(url,{cache:'no-store'});
+      const d=await r.json();
+      for(const item of d?.QuotationCodeTable?.Data||[])
+        result[item.Code]={name:item.Name,mkt:item.MktNum||'10'};
+    }catch(e){ console.warn('searchapi 失敗:',e.message); }
+  }
 
-  // 備用方案：searchapi（本機直接存取時可用）
+  // 備用方案：push2 slist（若 proxy 也失敗時）
   if(!Object.keys(result).length){
-    const prefix=code==='510050'?'50ETF':code==='510300'?'300ETF':
-                 code==='510500'?'500ETF':code==='159919'?'300ETF':
-                 code==='588000'?'科創50':code;
-    for(const type of ['购','沽']){
-      try{
-        const q=`${prefix}${type}${moNum}月`;
-        const r=await fetch(
-          `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=REMGTP&count=60`,
-          {headers:{Referer:'https://www.eastmoney.com/'},cache:'no-store'});
-        const d=await r.json();
-        for(const item of d?.QuotationCodeTable?.Data||[])
-          result[item.Code]={name:item.Name,mkt:item.MktNum||'10'};
-      }catch(e){}
-    }
+    try{
+      const url=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
+        `&fields=f12,f13,f14&pn=1&pz=500&po=1&np=1`+
+        `&ut=fa5fd1943c7b386f172d6893dbfba10b&fid=f12`+
+        `&fs=b:${code}+f:!50&_=${Date.now()}`;
+      const r=await fetch(url,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
+      const d=await r.json();
+      for(const item of d?.data?.diff||[]){
+        const c=String(item.f12||'');
+        const name=item.f14||'';
+        const mkt=String(item.f13||'10');
+        if(c&&name) result[c]={name,mkt};
+      }
+    }catch(e){ console.warn('slist 也失敗:',e.message); }
   }
   return result;
 }
@@ -643,6 +656,16 @@ function loadDemo(){
   document.getElementById('dot').className='live-dot';
   render();
 }
+
+// ── 即時時鐘 ─────────────────────────────────
+function tickClock(){
+  const d=new Date();
+  const s=`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+  const el=document.getElementById('live-clock');
+  if(el) el.textContent=s;
+}
+setInterval(tickClock,1000);
+tickClock();
 
 // ── 初始化 ──────────────────────────────────
 buildMonths();
