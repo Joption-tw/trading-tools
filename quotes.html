@@ -335,57 +335,79 @@ function parseName(name){
   return{isCall, strike:strikeRaw/1000, monthNum};
 }
 
-// ── 抓即時報價（東方財富）────────────────────
+// ── 抓即時報價（騰訊財經 qt.gtimg.cn，有 CORS）──
 async function fetchQuotes(codesMap){
-  const entries=Object.entries(codesMap);
-  if(!entries.length) return{};
+  const codes=Object.keys(codesMap);
+  if(!codes.length) return{};
+  const out={};
 
-  const parseItems=(items)=>{
-    const out={};
-    for(const item of items){
-      const c=String(item.f12||''); if(!c) continue;
-      // fltt=2 → 價格已是實際浮點數，不需 /1000
-      const L=item.f2,B=item.f17,A=item.f15,chg=item.f3,chgA=item.f4,vol=item.f5,oi=item.f18;
-      out[c]={
-        last: typeof L==='number'?L:null,
-        bid:  typeof B==='number'?B:null,
-        ask:  typeof A==='number'?A:null,
-        chg:  typeof chg==='number'?chg:null,
-        chgA: typeof chgA==='number'?chgA:null,
-        vol:  typeof vol==='number'?vol:0,
-        oi:   typeof oi==='number'?oi:null
+  // ── 主要：騰訊財經（無 CORS 問題）─────────────
+  try{
+    // 上交所期權代碼加 sh 前綴，深交所加 sz
+    const ids=codes.map(c=>{
+      const mkt=(codesMap[c]?.mkt||'10');
+      return (mkt==='0'?'sz':'sh')+c;
+    }).join(',');
+    const r=await fetch(`https://qt.gtimg.cn/q=${ids}`,{cache:'no-store'});
+    const txt=await r.text();
+    console.log('[quotes] Tencent raw:', txt.substring(0,200));
+
+    // v_sh10011291="1~50ETF购5月3000~10011291~0.0350~0.0005~1.45~12345~..."
+    const re=/v_(?:sh|sz)(\d+)="([^"]+)"/g;
+    let m;
+    while((m=re.exec(txt))!==null){
+      const code=m[1], pts=m[2].split('~');
+      const last=parseFloat(pts[3]),chgA=parseFloat(pts[31]||pts[4]),
+            chg=parseFloat(pts[32]||pts[5]),vol=parseInt(pts[36]||pts[6]),
+            bid=parseFloat(pts[9]),ask=parseFloat(pts[19]);
+      out[code]={
+        last: last>0?last:null,
+        bid:  bid>0?bid:null,
+        ask:  ask>0?ask:null,
+        chg:  isFinite(chg)?chg:null,
+        chgA: isFinite(chgA)?chgA:null,
+        vol:  vol||0, oi:null
       };
     }
-    return out;
-  };
-
-  // 依序嘗試：市場代碼 10(滬期權) → 1(滬A) → 各自走 CORS Proxy
-  const codes=entries.map(([c])=>c);
-  for(const pfx of['10','1']){
-    const secids=codes.map(c=>`${pfx}.${c}`).join(',');
-    const target=`https://push2.eastmoney.com/api/qt/ulist/get?secids=${encodeURIComponent(secids)}&fields=f2,f3,f4,f5,f12,f14,f15,f17,f18&fltt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&_=${Date.now()}`;
-
-    // 先直連
-    try{
-      const r=await fetch(target,{headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'});
-      const d=await r.json();
-      const items=d?.data?.diff||[];
-      console.log(`[quotes] pfx=${pfx} direct items=${items.length}`, items[0]);
-      if(items.some(i=>typeof i.f2==='number')) return parseItems(items);
-    }catch(e){ console.warn('[quotes] direct fail',pfx,e.message); }
-
-    // 直連失敗 → CORS Proxy
-    if(CORS_PROXY){
-      try{
-        const r=await fetch(CORS_PROXY+encodeURIComponent(target),{cache:'no-store'});
-        const d=await r.json();
-        const items=d?.data?.diff||[];
-        console.log(`[quotes] pfx=${pfx} proxy items=${items.length}`, items[0]);
-        if(items.some(i=>typeof i.f2==='number')) return parseItems(items);
-      }catch(e){ console.warn('[quotes] proxy fail',pfx,e.message); }
+    if(Object.values(out).some(v=>v.last>0)){
+      console.log('[quotes] Tencent OK, contracts:', Object.keys(out).length);
+      return out;
     }
-  }
-  return{};
+    console.warn('[quotes] Tencent 0 valid prices, raw:', txt.substring(0,300));
+  }catch(e){ console.warn('[quotes] Tencent fail:', e.message); }
+
+  // ── 備用：新浪 hq.sinajs.cn（via CORS proxy）──
+  try{
+    const ids=codes.map(c=>'sh'+c).join(',');
+    const target=`https://hq.sinajs.cn/list=${ids}`;
+    const url=CORS_PROXY?CORS_PROXY+encodeURIComponent(target):target;
+    const r=await fetch(url,{cache:'no-store'});
+    const txt=await r.text();
+    console.log('[quotes] Sina raw:', txt.substring(0,200));
+    const re=/hq_str_sh(\d+)="([^"]+)"/g;
+    let m;
+    while((m=re.exec(txt))!==null){
+      const code=m[1], pts=m[2].split(',');
+      const last=parseFloat(pts[3]),prev=parseFloat(pts[2]);
+      const bid=parseFloat(pts[10])||parseFloat(pts[6]);
+      const ask=parseFloat(pts[20])||parseFloat(pts[7]);
+      const vol=parseInt(pts[8]);
+      out[code]={
+        last: last>0?last:null,
+        bid:  bid>0?bid:null,
+        ask:  ask>0?ask:null,
+        chg:  last>0&&prev>0?(last-prev)/prev*100:null,
+        chgA: last>0&&prev>0?last-prev:null,
+        vol:  vol||0, oi:null
+      };
+    }
+    if(Object.values(out).some(v=>v.last>0)){
+      console.log('[quotes] Sina OK');
+      return out;
+    }
+  }catch(e){ console.warn('[quotes] Sina fail:', e.message); }
+
+  return out;
 }
 
 // ── 渲染 ──────────────────────────────────────
