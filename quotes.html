@@ -132,7 +132,7 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <div class="sep"></div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
       <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
-      <span style="font-size:9px;color:#8b949e;">v1.4.1 · A股ETF期權報價</span>
+      <span style="font-size:9px;color:#8b949e;">v1.4.2 · A股ETF期權報價</span>
     </div>
   </div>
 </div>
@@ -356,63 +356,68 @@ async function fetchQuotes(codesMap){
   const codes=Object.keys(codesMap);
   if(!codes.length) return{};
   const out={};
-  const UT='fa5fd1943c7b386f172d6893dbfba10b';
-  const ts=Date.now();
 
-  // ── 主要：ulist 批次抓（1 個 proxy 請求取全部代碼）──
-  // secids=10.10011291,10.10011292,...
+  // ── 主要：新浪 hq.sinajs.cn（透過私人 proxy，支援 sh10011xxx 期權代碼）──
+  // 格式：hq_str_sh10011291="名稱,開,收,最新,高,低,買,賣,量,額,..."
+  try{
+    const ids=codes.map(c=>'sh'+c).join(',');
+    const target=`https://hq.sinajs.cn/list=${ids}`;
+    const r=await proxyFetch(target);
+    // 新浪回傳 GBK，proxy 可能轉成 utf-8，嘗試直接讀取
+    const txt=await r.text();
+    console.log('[quotes] Sina hq raw:', txt.substring(0,400));
+
+    // hq_str_sh10011291="50ETF购5月3000,prev,open,last,high,low,bid,ask,vol,..."
+    // 或：hq_str_sh10011291="name,prev,open,last,..."; 格式類似股票
+    const re=/hq_str_(?:sh|sz)(\d+)="([^"]+)"/g;
+    let m;
+    while((m=re.exec(txt))!==null){
+      const code=m[1], pts=m[2].split(',');
+      // 嘗試兩種常見格式
+      // 格式A(股票): [0]=名,1=開,2=收,3=最新,4=高,5=低,6=買,7=賣,8=量
+      // 格式B(期權): [0]=名,1=收,2=開,3=最新,4=高,5=低
+      const last=parseFloat(pts[3])||parseFloat(pts[6])||0;
+      const prev=parseFloat(pts[2])||parseFloat(pts[1])||0;
+      const bid =parseFloat(pts[6])||parseFloat(pts[10])||0;
+      const ask =parseFloat(pts[7])||parseFloat(pts[11])||0;
+      const vol =parseInt(pts[8])||0;
+      if(last>0)
+        out[code]={last,
+          chgA: prev>0?last-prev:0,
+          chg:  prev>0?(last-prev)/prev*100:0,
+          bid:  bid>0?bid:null,
+          ask:  ask>0?ask:null,
+          vol, oi:null};
+    }
+    const n=Object.keys(out).length;
+    console.log(`[quotes] Sina hq: ${n}/${codes.length} valid`);
+    if(n>0) return out;
+  }catch(e){ console.warn('[quotes] Sina hq fail:',e.message); }
+
+  // ── 備用：東方財富 ulist（透過 proxy）────────────
+  const UT='fa5fd1943c7b386f172d6893dbfba10b';
   const secids=codes.map(c=>`${codesMap[c]?.mkt||'10'}.${c}`).join(',');
   const ulistTarget=`https://push2.eastmoney.com/api/qt/ulist/get?secids=${encodeURIComponent(secids)}`+
-    `&fields=f12,f43,f169,f170,f5,f15,f19,f18&fltt=2&ut=${UT}&_=${ts}`;
-
+    `&fields=f12,f43,f169,f170,f5,f15,f19,f18&fltt=2&ut=${UT}&_=${Date.now()}`;
   try{
     const r=await proxyFetch(ulistTarget);
     const d=await r.json();
     const diff=d?.data?.diff||[];
-    console.log('[quotes] ulist count:',diff.length, diff.length?JSON.stringify(diff[0]):'(empty)');
+    console.log('[quotes] ulist count:',diff.length,
+      diff.length?'sample:'+JSON.stringify(diff[0]):'(empty)');
     for(const item of diff){
       const code=String(item.f12||'');
       if(!code) continue;
       const last=item.f43;
       if(typeof last==='number'&&last>0)
-        out[code]={last, chgA:item.f169||0, chg:item.f170||0,
-          bid:item.f19>0?item.f19:null, ask:item.f15>0?item.f15:null,
-          vol:item.f5||0, oi:item.f18||null};
+        out[code]={last,chgA:item.f169||0,chg:item.f170||0,
+          bid:item.f19>0?item.f19:null,ask:item.f15>0?item.f15:null,
+          vol:item.f5||0,oi:item.f18||null};
     }
     const n=Object.keys(out).length;
     console.log(`[quotes] ulist: ${n}/${codes.length} valid`);
     if(n>0) return out;
   }catch(e){ console.warn('[quotes] ulist fail:',e.message); }
-
-  // ── 備用：逐一 stock/get（22 個並行 proxy 請求）────
-  console.log('[quotes] 嘗試逐一 stock/get...');
-  try{
-    const reqs=codes.map(async code=>{
-      const mkt=codesMap[code]?.mkt||'10';
-      const t=`https://push2.eastmoney.com/api/qt/stock/get?secid=${mkt}.${code}`+
-        `&fields=f43,f169,f170,f5,f15,f19,f18&fltt=2&ut=${UT}&_=${ts}`;
-      try{
-        const r=await proxyFetch(t);
-        const d=await r.json();
-        return{code,dt:d?.data};
-      }catch(e){return{code,dt:null};}
-    });
-    const results=await Promise.all(reqs);
-    // 印出第一筆有值的 sample，確認欄位
-    const ok=results.find(x=>x.dt?.f43);
-    if(ok) console.log('[quotes] stock/get sample:',JSON.stringify(ok.dt));
-    for(const{code,dt}of results){
-      if(!dt) continue;
-      const last=dt.f43;
-      if(typeof last==='number'&&last>0)
-        out[code]={last, chgA:dt.f169||0, chg:dt.f170||0,
-          bid:dt.f19>0?dt.f19:null, ask:dt.f15>0?dt.f15:null,
-          vol:dt.f5||0, oi:dt.f18||null};
-    }
-    const n=Object.keys(out).length;
-    console.log(`[quotes] stock/get: ${n}/${codes.length} valid`);
-    if(n>0) return out;
-  }catch(e){ console.warn('[quotes] stock/get fail:',e.message); }
 
   return out;
 }
