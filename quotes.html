@@ -132,7 +132,7 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <div class="sep"></div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
       <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
-      <span style="font-size:9px;color:#8b949e;">v1.4.2 · A股ETF期權報價</span>
+      <span style="font-size:9px;color:#8b949e;">v1.4.3 · A股ETF期權報價</span>
     </div>
   </div>
 </div>
@@ -373,13 +373,11 @@ async function fetchQuotes(codesMap){
     let m;
     while((m=re.exec(txt))!==null){
       const code=m[1], pts=m[2].split(',');
-      // 嘗試兩種常見格式
-      // 格式A(股票): [0]=名,1=開,2=收,3=最新,4=高,5=低,6=買,7=賣,8=量
-      // 格式B(期權): [0]=名,1=收,2=開,3=最新,4=高,5=低
-      const last=parseFloat(pts[3])||parseFloat(pts[6])||0;
-      const prev=parseFloat(pts[2])||parseFloat(pts[1])||0;
-      const bid =parseFloat(pts[6])||parseFloat(pts[10])||0;
-      const ask =parseFloat(pts[7])||parseFloat(pts[11])||0;
+      // 新浪格式：[0]=名,[1]=開,[2]=昨收,[3]=現價,[4]=高,[5]=低,[6]=買,[7]=賣,[8]=量
+      const last=parseFloat(pts[3])||0;
+      const prev=parseFloat(pts[2])||0;
+      const bid =parseFloat(pts[6])||0;
+      const ask =parseFloat(pts[7])||0;
       const vol =parseInt(pts[8])||0;
       if(last>0)
         out[code]={last,
