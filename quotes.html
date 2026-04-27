@@ -132,7 +132,7 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <div class="sep"></div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
       <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
-      <span style="font-size:9px;color:#8b949e;">v1.2.0 · A股ETF期權報價</span>
+      <span style="font-size:9px;color:#8b949e;">v1.3.1 · A股ETF期權報價</span>
     </div>
   </div>
 </div>
@@ -335,77 +335,79 @@ function parseName(name){
   return{isCall, strike:strikeRaw/1000, monthNum};
 }
 
-// ── 抓即時報價（騰訊財經 qt.gtimg.cn，有 CORS）──
+// ── 抓即時報價（東方財富 push2 逐一 stock/get，有 CORS）──
 async function fetchQuotes(codesMap){
   const codes=Object.keys(codesMap);
   if(!codes.length) return{};
   const out={};
+  const UT='fa5fd1943c7b386f172d6893dbfba10b';
+  const HDRS={headers:{Referer:'https://data.eastmoney.com/'},cache:'no-store'};
 
-  // ── 主要：騰訊財經（無 CORS 問題）─────────────
+  // ── 主要：東方財富 push2 逐一抓（支援 CORS，不需 proxy）──
+  // 上交所期權市場代碼 = 10，深交所 = 0
+  // fields: f43=最新價, f169=漲跌額, f170=漲跌%, f5=成交量,
+  //         f19=買一價, f15=賣一價, f18=持倉量
   try{
-    // 上交所期權代碼加 sh 前綴，深交所加 sz
-    const ids=codes.map(c=>{
-      const mkt=(codesMap[c]?.mkt||'10');
-      return (mkt==='0'?'sz':'sh')+c;
-    }).join(',');
-    const r=await fetch(`https://qt.gtimg.cn/q=${ids}`,{cache:'no-store'});
-    const txt=await r.text();
-    console.log('[quotes] Tencent raw:', txt.substring(0,200));
+    const ts=Date.now();
+    const reqs=codes.map(async code=>{
+      const mkt=codesMap[code]?.mkt||'10';
+      const secid=`${mkt}.${code}`;
+      const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}`+
+        `&fields=f43,f169,f170,f5,f15,f19,f18,f57,f58&fltt=2&ut=${UT}&_=${ts}`;
+      try{
+        const r=await fetch(url,HDRS);
+        const d=await r.json();
+        return{code, dt:d?.data};
+      }catch(e){ return{code,dt:null}; }
+    });
+    const results=await Promise.all(reqs);
 
-    // v_sh10011291="1~50ETF购5月3000~10011291~0.0350~0.0005~1.45~12345~..."
-    const re=/v_(?:sh|sz)(\d+)="([^"]+)"/g;
-    let m;
-    while((m=re.exec(txt))!==null){
-      const code=m[1], pts=m[2].split('~');
-      const last=parseFloat(pts[3]),chgA=parseFloat(pts[31]||pts[4]),
-            chg=parseFloat(pts[32]||pts[5]),vol=parseInt(pts[36]||pts[6]),
-            bid=parseFloat(pts[9]),ask=parseFloat(pts[19]);
-      out[code]={
-        last: last>0?last:null,
-        bid:  bid>0?bid:null,
-        ask:  ask>0?ask:null,
-        chg:  isFinite(chg)?chg:null,
-        chgA: isFinite(chgA)?chgA:null,
-        vol:  vol||0, oi:null
-      };
-    }
-    if(Object.values(out).some(v=>v.last>0)){
-      console.log('[quotes] Tencent OK, contracts:', Object.keys(out).length);
-      return out;
-    }
-    console.warn('[quotes] Tencent 0 valid prices, raw:', txt.substring(0,300));
-  }catch(e){ console.warn('[quotes] Tencent fail:', e.message); }
+    // 第一筆有效 log，幫助確認欄位
+    const firstOk=results.find(x=>x.dt&&x.dt.f43);
+    if(firstOk) console.log('[quotes] EM first sample:', JSON.stringify(firstOk.dt));
 
-  // ── 備用：新浪 hq.sinajs.cn（via CORS proxy）──
+    for(const{code,dt}of results){
+      if(!dt) continue;
+      const last=dt.f43, chgA=dt.f169, chg=dt.f170,
+            vol=dt.f5, bid=dt.f19, ask=dt.f15, oi=dt.f18;
+      if(typeof last==='number'&&last>0){
+        out[code]={
+          last, chgA:chgA||0, chg:chg||0,
+          bid: bid>0?bid:null, ask: ask>0?ask:null,
+          vol: vol||0, oi: oi||null
+        };
+      }
+    }
+    const validCnt=Object.keys(out).length;
+    console.log(`[quotes] EM push2 individual: ${validCnt}/${codes.length} valid`);
+    if(validCnt>0) return out;
+  }catch(e){ console.warn('[quotes] EM individual fail:',e.message); }
+
+  // ── 備用：東方財富 slist（整批抓，有時會有資料）──
   try{
-    const ids=codes.map(c=>'sh'+c).join(',');
-    const target=`https://hq.sinajs.cn/list=${ids}`;
-    const url=CORS_PROXY?CORS_PROXY+encodeURIComponent(target):target;
-    const r=await fetch(url,{cache:'no-store'});
-    const txt=await r.text();
-    console.log('[quotes] Sina raw:', txt.substring(0,200));
-    const re=/hq_str_sh(\d+)="([^"]+)"/g;
-    let m;
-    while((m=re.exec(txt))!==null){
-      const code=m[1], pts=m[2].split(',');
-      const last=parseFloat(pts[3]),prev=parseFloat(pts[2]);
-      const bid=parseFloat(pts[10])||parseFloat(pts[6]);
-      const ask=parseFloat(pts[20])||parseFloat(pts[7]);
-      const vol=parseInt(pts[8]);
-      out[code]={
-        last: last>0?last:null,
-        bid:  bid>0?bid:null,
-        ask:  ask>0?ask:null,
-        chg:  last>0&&prev>0?(last-prev)/prev*100:null,
-        chgA: last>0&&prev>0?last-prev:null,
-        vol:  vol||0, oi:null
-      };
+    const code0=codes[0];
+    // 從第一個合約名稱推算標的代碼（名稱含 510050/510300 等）
+    const nm=codesMap[code0]?.name||'';
+    const ulMatch=nm.match(/5\d{5}/);
+    const ulCode=ulMatch?ulMatch[0]:'510050';
+    const url=`https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2`+
+      `&fields=f12,f13,f43,f169,f170,f5,f15,f19,f18&pn=1&pz=200&po=1&np=1`+
+      `&ut=${UT}&fid=f12&fs=b:${ulCode}+f:!50&_=${Date.now()}`;
+    const r=await fetch(url,HDRS);
+    const d=await r.json();
+    for(const item of d?.data?.diff||[]){
+      const code=String(item.f12||'');
+      if(!code||!codesMap[code]) continue;
+      const last=item.f43, chgA=item.f169, chg=item.f170,
+            vol=item.f5, bid=item.f19, ask=item.f15, oi=item.f18;
+      if(typeof last==='number'&&last>0)
+        out[code]={last,chgA:chgA||0,chg:chg||0,
+          bid:bid>0?bid:null,ask:ask>0?ask:null,vol:vol||0,oi:oi||null};
     }
-    if(Object.values(out).some(v=>v.last>0)){
-      console.log('[quotes] Sina OK');
-      return out;
-    }
-  }catch(e){ console.warn('[quotes] Sina fail:', e.message); }
+    const validCnt=Object.keys(out).length;
+    console.log(`[quotes] EM slist: ${validCnt} valid`);
+    if(validCnt>0) return out;
+  }catch(e){ console.warn('[quotes] EM slist fail:',e.message); }
 
   return out;
 }
