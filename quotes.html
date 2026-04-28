@@ -132,7 +132,7 @@ input.qty:focus{ outline:none; border-color:#79c0ff; background:#161b22; }
     <div class="sep"></div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:1px;">
       <span id="live-clock" style="font-size:13px;font-weight:700;color:#f0f6fc;letter-spacing:1px;font-family:Consolas,monospace;">--:--:--</span>
-      <span style="font-size:9px;color:#8b949e;">v1.5.0 · A股ETF期權報價</span>
+      <span style="font-size:9px;color:#8b949e;">v1.5.1 · A股ETF期權報價</span>
     </div>
   </div>
 </div>
@@ -356,20 +356,43 @@ async function fetchQuotes(codesMap){
   const codes=Object.keys(codesMap);
   if(!codes.length) return{};
   const out={};
+  const ulCode=window._currentUL||'510050';
+  const yyyymm=window._currentMonth||'202605';
 
-  // ── 主要：<script> 標籤法（瀏覽器直連新浪，無 CORS 限制）──────────
-  // hq.sinajs.cn 的回應格式是 JS 變數賦值，天然支援 <script> 載入
-  // 變數名：hq_str_sh10011291 = "名稱,開,昨收,現價,高,低,買,賣,量,..."
+  // ── 主要：東方財富 DataCenter API（公開 Web API，有 CORS headers）──
+  // 不需要 proxy，直接抓，欄位清楚
   try{
-    // 清除殘留全域變數
+    const cols='OPTION_CODE,NOW,CHANGE_RATE,CHANGE,VOLUME,OPEN_INTEREST,BID_PRICE_1,ASK_PRICE_1';
+    const filter=`(TRADE_MARKET_CODE="10")(UNDERLYING_CODE="${ulCode}")(CONTRACT_MONTH="${yyyymm}")`;
+    const url=`https://datacenter-web.eastmoney.com/api/data/v1/get`+
+      `?reportName=RPT_OPTION_QUOTE&columns=${encodeURIComponent(cols)}`+
+      `&filter=${encodeURIComponent(filter)}&pageNumber=1&pageSize=300`+
+      `&source=DataCenter&client=Web&_=${Date.now()}`;
+    const r=await fetch(url,{cache:'no-store'});
+    const d=await r.json();
+    const items=d?.result?.data||[];
+    console.log('[quotes] DC count:',items.length,items[0]?JSON.stringify(items[0]):'(empty)');
+    for(const item of items){
+      const code=String(item.OPTION_CODE||'');
+      const last=parseFloat(item.NOW)||0;
+      if(!code||!last) continue;
+      out[code]={last,
+        chg:  parseFloat(item.CHANGE_RATE)||0,
+        chgA: parseFloat(item.CHANGE)||0,
+        bid:  parseFloat(item.BID_PRICE_1)||null,
+        ask:  parseFloat(item.ASK_PRICE_1)||null,
+        vol:  parseInt(item.VOLUME)||0,
+        oi:   parseInt(item.OPEN_INTEREST)||null};
+    }
+    const n=Object.keys(out).length;
+    console.log(`[quotes] DataCenter: ${n}/${codes.length} valid`);
+    if(n>0) return out;
+  }catch(e){ console.warn('[quotes] DataCenter fail:',e.message); }
+
+  // ── 備用：新浪 <script> 標籤（市場認台灣 IP，script 無 CORS）──
+  try{
     codes.forEach(c=>{ delete window['hq_str_sh'+c]; delete window['hq_str_sz'+c]; });
-
-    const ids=codes.map(c=>{
-      const mkt=codesMap[c]?.mkt||'10';
-      return(mkt==='0'?'sz':'sh')+c;
-    }).join(',');
-
-    // 用 <script> 標籤載入新浪資料（瀏覽器 IP 直接連，不受 CORS 限制）
+    const ids=codes.map(c=>(codesMap[c]?.mkt==='0'?'sz':'sh')+c).join(',');
     await new Promise(resolve=>{
       const s=document.createElement('script');
       s.src=`https://hq.sinajs.cn/list=${ids}`;
@@ -378,36 +401,21 @@ async function fetchQuotes(codesMap){
       s.onerror=()=>{clearTimeout(t);s.remove();resolve();};
       document.head.appendChild(s);
     });
-
-    // 讀取全域變數 & 解析
     for(const code of codes){
-      const mkt=codesMap[code]?.mkt||'10';
-      const varName=(mkt==='0'?'hq_str_sz':'hq_str_sh')+code;
-      const val=window[varName]||'';
-      delete window[varName];
+      const varName=(codesMap[code]?.mkt==='0'?'hq_str_sz':'hq_str_sh')+code;
+      const val=window[varName]||''; delete window[varName];
       if(!val||val.length<5) continue;
       const pts=val.split(',');
-      // [0]=名,[1]=開,[2]=昨收,[3]=現價,[4]=高,[5]=低,[6]=買,[7]=賣,[8]=量
-      const last=parseFloat(pts[3])||0;
-      const prev=parseFloat(pts[2])||0;
-      const bid =parseFloat(pts[6])||0;
-      const ask =parseFloat(pts[7])||0;
-      const vol =parseInt(pts[8])||0;
-      if(last>0)
-        out[code]={last,
-          chgA:prev>0?last-prev:0,
-          chg: prev>0?(last-prev)/prev*100:0,
-          bid: bid>0?bid:null, ask:ask>0?ask:null,
-          vol, oi:null};
+      const last=parseFloat(pts[3])||0, prev=parseFloat(pts[2])||0,
+            bid=parseFloat(pts[6])||0,  ask=parseFloat(pts[7])||0,
+            vol=parseInt(pts[8])||0;
+      if(last>0) out[code]={last,chgA:prev?last-prev:0,
+        chg:prev?(last-prev)/prev*100:0,
+        bid:bid||null,ask:ask||null,vol,oi:null};
     }
     const n=Object.keys(out).length;
     console.log(`[quotes] Sina script: ${n}/${codes.length} valid`);
     if(n>0) return out;
-
-    // debug: 確認第一個變數的值
-    const dbgVar='hq_str_sh'+codes[0];
-    console.warn('[quotes] Sina script 0 valid. sample var was:',
-      typeof window[dbgVar]!=='undefined'?window[dbgVar]:'(not set)');
   }catch(e){ console.warn('[quotes] Sina script fail:',e.message); }
 
   return out;
@@ -561,6 +569,7 @@ async function refresh(){
   const code =document.getElementById('sel-ul').value;
   window._currentUL=code; // 供 fetchQuotes 取用
   const ymVal=document.getElementById('sel-month').value;
+  window._currentMonth=ymVal; // YYYYMM，供 fetchQuotes DataCenter 用
   const moNum=parseInt(ymVal.slice(4,6));
   expiryDate=expiry4thWed(ymVal);
 
